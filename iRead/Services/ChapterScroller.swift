@@ -38,8 +38,16 @@ final class ChapterTextView: UITextView, UITextViewDelegate {
         delegate = self
 
         attributedText = attributed
+        // UITextView 是 UIScrollView，会在内部把 textContainer.size 按 bounds 重置
+        // （此时 bounds 还是 .zero），容器高度变 0 就只排出十几行，整章被裁掉大半。
+        // 因此排版前必须把容器尺寸再钉一次。
+        layoutManager.allowsNonContiguousLayout = false
+        textContainer.size = CGSize(width: max(1, width), height: 100_000)
         layoutManager.ensureLayout(for: textContainer)
-        let textHeight = ceil(layoutManager.usedRect(for: textContainer).height) + 2
+        var textHeight = ceil(layoutManager.usedRect(for: textContainer).height) + 2
+        if textHeight < 2 {
+            textHeight = ceil(sizeThatFits(CGSize(width: max(1, width), height: 100_000)).height)
+        }
         frame = CGRect(x: 0, y: 0, width: max(1, width), height: max(1, textHeight))
     }
 
