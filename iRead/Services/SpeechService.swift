@@ -260,7 +260,8 @@ final class SpeechService: NSObject, ObservableObject {
     private func startPiper(_ text: String, rate: Double, model: PiperModel) {
         // 系统语速 0.5 约等于正常语速，映射到 Piper 的 1.0 倍
         currentSpeed = Float(min(max(rate / 0.5, 0.6), 2.0))
-        sentences = Self.splitForPiper(text, softBreak: model.usesLexicon)
+        // 逗号处一律切句：男声不切就一口气念完，女声不切则逗号几乎不停顿
+        sentences = Self.splitForPiper(text, softBreak: true)
         sentenceRanges = Self.ranges(of: sentences)
         bufferRanges = []
         scheduledCount = 0
@@ -434,19 +435,23 @@ final class SpeechService: NSObject, ObservableObject {
 
     /// 按中文标点切句，兼顾长度上限，保证单句合成延迟足够低。
     ///
-    /// - Parameter softBreak: 是否把逗号/顿号/冒号也当作断句点。
-    ///   走词典的音素化模型（男声超文）词典里**没有任何标点**，逗号会被直接丢弃，
-    ///   导致长句失去内部停顿、听起来「一口气念完」。此时必须靠切句把停顿补回来。
-    ///   走 espeak 的模型（女声花颜）能自己处理标点，不需要切这么碎。
-    static func splitForPiper(_ text: String, softBreak: Bool) -> [String] {
+    /// - Parameters:
+    ///   - softBreak: 是否把逗号/顿号/冒号也当作断句点。**两个模型都要开**：
+    ///     男声（超文）走词典，词典里没有任何标点，逗号会被直接丢弃；
+    ///     女声（花颜）走 espeak 虽然认标点，但生成时 `silence_scale` 只有 0.2，
+    ///     实测逗号处只剩约 60ms 的自然换气间隙，根本听不出停顿。
+    ///     想让逗号有停顿，只能靠切句 + 按标点补静音，这一步是可控的。
+    ///   - minSoftLength: 软断句的最小累计字数。中文短句常是「他推开窗，」这类
+    ///     4~5 字结构，阈值过高会让这些逗号落进同一段，停顿就丢了。
+    static func splitForPiper(
+        _ text: String,
+        softBreak: Bool,
+        minSoftLength: Int = 4
+    ) -> [String] {
         var out: [String] = []
         var current = ""
         let stops: Set<Character> = ["。", "！", "？", "!", "?", "；", ";", "…", "\n"]
         let softs: Set<Character> = ["，", ",", "、", "：", ":"]
-        /// softBreak 下逗号断句的最小累计长度。
-        /// 取 4 是因为中文短句常为「他推开窗，」这类 4~5 字结构，
-        /// 阈值过高会让这些逗号落进同一段，停顿就丢了。
-        let minSoftLength = 4
 
         for ch in text {
             current.append(ch)

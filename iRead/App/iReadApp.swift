@@ -85,6 +85,25 @@ struct iReadApp: App {
             print("[SelfTest] split hard(\(hardOnly.count)): \(hardOnly)")
             print("[SelfTest] split soft(\(softSplit.count)): \(softSplit)")
 
+            // 逗号停顿验证：按 SpeechService 的真实流程（切句 → 按标点补静音）拼成整段落盘，
+            // 之后用波形量逗号处的静音长度，避免只靠「听起来有停顿」这种主观判断。
+            let pauseDemo = "夜色沉下来，城市的灯一盏一盏亮起。"
+            for model in models {
+                let parts = SpeechService.splitForPiper(pauseDemo, softBreak: true)
+                var merged: [Float] = []
+                var sampleRate: Int32 = 22050
+                for part in parts {
+                    guard let r = piper.synthesize(
+                        text: part, speed: 1.0, model: model, token: piper.currentToken()
+                    ) else { continue }
+                    sampleRate = r.sampleRate
+                    merged += r.samples
+                    merged += SpeechService.trailingSilence(for: part, sampleRate: r.sampleRate)
+                }
+                print("[SelfTest] merged \(model.rawValue) parts=\(parts.count) \(parts) audio=\(String(format: "%.2f", Double(merged.count) / Double(sampleRate)))s")
+                Self.dumpWav(merged, sampleRate: sampleRate, name: "merged-\(model.rawValue).wav")
+            }
+
             // 播放链路：走 SpeechService + AVAudioEngine，验证 onAdvance 能正常触发
             DispatchQueue.main.async {
                 let svc = SpeechService.shared
