@@ -15,8 +15,6 @@ struct ReaderPanel: View {
 
     /// 点「间距设置」展开更多排版项（截图时可用 --panel-advanced 直接展开）
     @State private var showAdvanced = ProcessInfo.processInfo.arguments.contains("--panel-advanced")
-    /// 点「更多」展开听书与开关项
-    @State private var showMore = false
 
     /// 内容实测高度 —— ScrollView 会贪婪撑满父容器，必须自己量一遍再夹紧，
     /// 否则面板收起时底部会多出一大片空白。
@@ -34,7 +32,6 @@ struct ReaderPanel: View {
                 otherRow
 
                 if showAdvanced { advancedBlock }
-                if showMore { moreBlock }
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
@@ -200,16 +197,18 @@ struct ReaderPanel: View {
             pill("间距设置", active: showAdvanced) {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     showAdvanced.toggle()
-                    if showAdvanced { showMore = false }
-                }
-            }
-            pill("听书", active: showMore) {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    showMore.toggle()
-                    if showMore { showAdvanced = false }
                 }
             }
             Spacer(minLength: 0)
+
+            // 听书相关的音色/语速已搬到独立播放器，这里只留阅读本身的开关
+            Text("常亮")
+                .font(.system(size: 12))
+                .foregroundStyle(theme.secondary)
+            Toggle("", isOn: $settings.keepScreenOn)
+                .labelsHidden()
+                .tint(theme.accent)
+                .scaleEffect(0.85)
         }
         .frame(height: 44)
     }
@@ -261,59 +260,6 @@ struct ReaderPanel: View {
                 .foregroundStyle(theme.secondary)
                 .frame(width: 22, alignment: .trailing)
         }
-    }
-
-    // MARK: - 展开：听书
-
-    private var moreBlock: some View {
-        VStack(spacing: 12) {
-            // 音色三档
-            HStack(spacing: 8) {
-                Text("音色")
-                    .font(.system(size: 11))
-                    .foregroundStyle(theme.secondary)
-                    .frame(width: 52, alignment: .leading)
-                ForEach(VoiceProfile.allCases) { profile in
-                    Button {
-                        settings.voiceProfile = profile
-                    } label: {
-                        Text(profile.name)
-                            .font(.system(size: 12, weight: settings.voiceProfile == profile ? .semibold : .regular))
-                            .foregroundStyle(settings.voiceProfile == profile ? theme.foreground : theme.secondary)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 30)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(settings.voiceProfile == profile
-                                          ? theme.foreground.opacity(0.12) : Color.clear)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
-            HStack(spacing: 10) {
-                Text("语速")
-                    .font(.system(size: 11))
-                    .foregroundStyle(theme.secondary)
-                    .frame(width: 52, alignment: .leading)
-                Slider(value: $settings.speechRate, in: 0.35...0.75, step: 0.05)
-                    .tint(theme.accent)
-                Text(String(format: "x%.1f", settings.speechRate * 2))
-                    .font(.system(size: 11, weight: .medium).monospacedDigit())
-                    .foregroundStyle(theme.secondary)
-                    .frame(width: 30, alignment: .trailing)
-            }
-
-            HStack {
-                Toggle("屏幕常亮", isOn: $settings.keepScreenOn)
-                    .font(.system(size: 12))
-                    .foregroundStyle(theme.secondary)
-                    .tint(theme.accent)
-            }
-        }
-        .padding(.vertical, 12)
-        .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
     private var theme: ReadingTheme { settings.theme }

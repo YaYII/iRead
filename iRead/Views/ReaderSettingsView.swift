@@ -19,18 +19,8 @@ struct ReaderSettingsView: View {
         if embedded {
             content
         } else {
-            ScrollViewReader { proxy in
-                ScrollView { content }
-                    .background(theme.background.ignoresSafeArea())
-                    .onAppear {
-                        // 仅供自动化截图：直接滚到听书区域
-                        if ProcessInfo.processInfo.arguments.contains("--prefs-scroll-speech") {
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                                withAnimation(nil) { proxy.scrollTo("speech", anchor: .top) }
-                            }
-                        }
-                    }
-            }
+            ScrollView { content }
+                .background(theme.background.ignoresSafeArea())
         }
     }
 
@@ -40,7 +30,6 @@ struct ReaderSettingsView: View {
             spacingCard
             themeCard
             brightnessCard
-            speechCard.id("speech")
             resetRow
         }
         .padding(embedded ? 0 : 14)
@@ -138,73 +127,6 @@ struct ReaderSettingsView: View {
                     settings.keepScreenOn.toggle()
                 }
             }
-        }
-    }
-
-    // MARK: - 听书
-
-    private var speechCard: some View {
-        card("speaker.wave.2") {
-            HStack(spacing: 8) {
-                ForEach(VoiceProfile.allCases) { profile in
-                    Button {
-                        settings.voiceProfile = profile
-                    } label: {
-                        Text(profile.name)
-                            .font(.system(size: 13, weight: settings.voiceProfile == profile ? .semibold : .regular))
-                            .foregroundStyle(
-                                settings.voiceProfile == profile ? theme.foreground : theme.secondary
-                            )
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 40)
-                            .background(
-                                RoundedRectangle(cornerRadius: 9)
-                                    .fill(settings.voiceProfile == profile
-                                          ? theme.foreground.opacity(0.12)
-                                          : Color.clear)
-                            )
-                            .overlay(alignment: .topTrailing) {
-                                // 资源不可用时只点一个角标，不写一句提示
-                                if settings.voiceProfile == profile, !profileStatus.ok {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                        .font(.system(size: 9))
-                                        .foregroundStyle(.orange)
-                                        .padding(4)
-                                }
-                            }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
-            HStack(spacing: 10) {
-                Image(systemName: "tortoise")
-                    .font(.system(size: 12))
-                    .foregroundStyle(theme.secondary)
-                Slider(value: $settings.speechRate, in: 0.35...0.75, step: 0.05)
-                    .tint(theme.accent)
-                Image(systemName: "hare")
-                    .font(.system(size: 13))
-                    .foregroundStyle(theme.secondary)
-                Text(String(format: "x%.1f", settings.speechRate * 2))
-                    .font(.system(size: 12, weight: .medium).monospacedDigit())
-                    .foregroundStyle(theme.secondary)
-                    .frame(width: 34, alignment: .trailing)
-            }
-        }
-    }
-
-    /// 当前音色是否可用（不可用时卡片角标提示）
-    private var profileStatus: (icon: String, text: String, ok: Bool) {
-        switch settings.voiceProfile {
-        case .neuralFemale:
-            let ok = SpeechService.isPiperAvailable(.female)
-            return ("checkmark.seal.fill", "女声", ok)
-        case .neuralMale:
-            let ok = SpeechService.isPiperAvailable(.male)
-            return ("checkmark.seal.fill", "男声", ok)
-        case .cantonese:
-            return ("checkmark.seal.fill", "粤语", SpeechService.isCantoneseAvailable)
         }
     }
 

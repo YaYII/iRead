@@ -7,13 +7,12 @@ import UIKit
 /// 正文用 CoreText 排版，听书时高亮正在朗读的那一句并自动跟随滚动。
 struct ReaderView: View {
     let bookID: String
-    /// 由书架「听书」入口进入时为 true，打开后自动开始朗读
-    var autoStartListen: Bool = false
 
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var settings: ReaderSettings
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject private var speech = SpeechService.shared
+    /// 听书是全局组件，这里只观察它，不拥有播放状态
+    @ObservedObject private var listening = ListeningCenter.shared
 
     @State private var content: BookContent?
     @State private var typesetter: ChapterTextProvider?
@@ -23,21 +22,15 @@ struct ReaderView: View {
     @State private var showChapters = false
     @State private var showSettings = false
     @State private var showBookmarks = false
+    @State private var showPlayer = false
     @State private var loadFailed = false
-    @State private var pendingListenStart = false
 
     @StateObject private var scrollProxy = ScrollProxy()
     /// 重建滚动视图时使用的锚点（章 + 章内字符）
     @State private var scrollAnchorChapter = 0
     @State private var scrollAnchorChar = 0
-    @State private var scrollSpeechOffset: Int = 0
 
-    // 听书
-    /// 当前朗读文本所在的章
-    @State private var speechChapter = 0
-    /// 当前朗读文本在章内的起始偏移（把引擎给的相对区间换算成章内坐标）
-    @State private var speechBase = 0
-    /// 正在朗读的区间（章内坐标），画在正文上
+    /// 正在朗读的区间（章内坐标），仅在「听的就是这本书」时有值
     @State private var speechHighlight: NSRange?
 
     private var theme: ReadingTheme { settings.theme }
@@ -94,11 +87,11 @@ struct ReaderView: View {
                 charIndex: scrollProxy.characterIndex,
                 throttled: false
             )
-            speech.stop()
+            // 注意：这里**不停止朗读**。听书是独立组件，退出阅读页继续播。
         }
-        .onReceive(speech.$spokenRange) { range in
-            applySpokenRange(range)
-        }
+        .onReceive(listening.$spokenRange) { _ in syncListeningHighlight() }
+        .onReceive(listening.$spokenChapter) { _ in syncListeningHighlight() }
+        .onReceive(listening.$bookID) { _ in syncListeningHighlight() }
         // 只有影响排版的设置变了才重排。亮度、语速、常亮这些不该触发重排，
         // 更不该动朗读进度 —— 以前监听 objectWillChange 时会把 scrollSpeechOffset
         // 覆盖成当前屏位置，结果就是「一调字号，朗读从眼前这段重读」。
@@ -147,6 +140,11 @@ struct ReaderView: View {
             .environmentObject(settings)
             .presentationDetents([.medium, .large])
         }
+        .sheet(isPresented: $showPlayer) {
+            ListeningPlayerView()
+                .environmentObject(store)
+                .environmentObject(settings)
+        }
     }
 
     // MARK: - 主体
@@ -190,11 +188,15 @@ struct ReaderView: View {
                     .zIndex(4)
                 }
 
-                if speech.isActive && !showChrome && !showSettings {
-                    VStack {
-                        Spacer()
-                        miniListenBar(content: content)
-                    }
+                // 听书悬浮组件：常驻「听」球 + 正在听时的控制胶囊。
+                // 不随沉浸模式消失，也不判断听的是不是这本书 —— 听 A 看 B 时照样能控制。
+                // 它浮在正文上，跟 UITextView / 滚动容器没有任何耦合。
+                if !showSettings {
+                    ListeningFloatingDock(
+                        onOpen: openPlayer,
+                        bottomInset: showChrome ? 78 : 24
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                     .zIndex(3)
                 }
@@ -276,7 +278,7 @@ struct ReaderView: View {
             startCharacter: scrollAnchorChar,
             signature: signature,
             proxy: scrollProxy,
-            highlightChapter: speechChapter,
+            highlightChapter: listening.bookID == bookID ? listening.spokenChapter : -1,
             highlightRange: speechHighlight,
             highlightColor: theme.speechHighlight,
             onPositionChange: { ch, char in
@@ -299,12 +301,6 @@ struct ReaderView: View {
             }
         )
         .frame(width: geo.size.width, height: geo.size.height)
-        .onAppear {
-            if pendingListenStart {
-                pendingListenStart = false
-                startListening()
-            }
-        }
         // 重排（改字号/行距/主题）只影响排版，跟朗读进度无关：
         // 这里千万不要再调 speakNextScrollChunk()，否则会把正在念的这一段掐断，
         // 直接从下一段起播，听感上就是「跳了一段」。高亮由 updateUIView 重新贴回。
@@ -331,11 +327,13 @@ struct ReaderView: View {
                 }
                 Spacer()
                 Button {
-                    toggleListening()
+                    openPlayer()
                 } label: {
-                    Image(systemName: speech.isActive ? "speaker.wave.2.fill" : "speaker.wave.2")
+                    Image(systemName: "headphones")
                         .font(.body)
+                        .foregroundStyle(isListeningThisBook ? theme.accent : theme.foreground)
                 }
+                .accessibilityLabel("打开听书")
                 Button {
                     toggleBookmark()
                 } label: {
@@ -374,253 +372,56 @@ struct ReaderView: View {
         .buttonStyle(.plain)
     }
 
-    /// 沉浸模式下的迷你听书条
-    private func miniListenBar(content: BookContent) -> some View {
-        HStack(spacing: 14) {
-            Button {
-                speech.toggle()
-            } label: {
-                Image(systemName: speech.isPaused ? "play.fill" : "pause.fill")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 38, height: 38)
-                    .background(theme.accent.opacity(0.18), in: Circle())
-            }
-            .buttonStyle(.plain)
+    // MARK: - 听书控制（只负责发起与定位，播放状态由 ListeningCenter 管）
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(speech.isPaused ? "听书已暂停" : (speech.isSpeaking ? "正在朗读" : "准备朗读…"))
-                    .font(.footnote.weight(.medium))
-                Text(positionLine(content: content))
-                    .font(.caption2)
-                    .lineLimit(1)
-            }
-            .foregroundStyle(theme.foreground)
+    /// 正在听的是不是这本书。听别人的书时，本页既不贴高亮也不当作已开播。
+    private var isListeningThisBook: Bool {
+        listening.bookID == bookID && listening.isActive
+    }
 
-            Spacer()
-
-            Button {
-                stopListening()
-            } label: {
-                Image(systemName: "stop.circle")
-                    .font(.title3)
-            }
-            .buttonStyle(.plain)
+    /// 所有听书入口（顶部耳机、右下悬浮球）都只打开听书界面，不在这里出声。
+    /// 没有选中过书时，把当前这本装进听书组件作预选（依然不播）；
+    /// 已经在听别的书时一律不打断，换书由播放器内部的「选书」完成。
+    private func openPlayer() {
+        if !listening.isPlayingSomething {
+            let last = max(0, (content?.chapterCount ?? 1) - 1)
+            let chapter = min(max(0, chapterIndex), last)
+            listening.prepare(
+                bookID: bookID,
+                fallbackChapter: chapter,
+                fallbackChar: max(0, scrollProxy.characterIndex)
+            )
         }
-        .foregroundStyle(theme.foreground)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
-        .padding(.horizontal, 14)
-        .padding(.bottom, 12)
+        showPlayer = true
     }
 
-    private func positionLine(content: BookContent) -> String {
-        let title = content.chapterTitle(at: chapterIndex)
-        let length = max(1, content.chapterText(at: chapterIndex).length)
-        let ratio = Double(min(max(0, scrollProxy.characterIndex), length)) / Double(length)
-        let percent = Int(min(1, max(0, ratio)) * 100)
-        return "\(title) · 本章 \(percent)%"
-    }
-
-    // MARK: - 听书控制
-
-    private func toggleListening() {
-        if speech.isActive {
-            stopListening()
-        } else {
-            startListening()
-        }
-    }
-
-    private func startListening() {
-        guard let content, content.chapterCount > 0 else { return }
-        // 起点只认「上次朗读停下的文字位置」，不认屏幕视口。
-        // 视口只说明你现在眼睛看哪儿；拿它当起点，读出来的就永远是屏幕上那一段，
-        // 而不是这本书的朗读进度。
-        let target = speechResumeTarget()
-        beginSpeaking(chapter: target.chapter, char: target.char, anchorViewport: true)
-    }
-
-    /// 续读位置：优先上次朗读记录；完全没有记录时才用阅读进度兜底。
-    /// 两种情况拿到的都是「文字位置」（章 + 章内字符），与屏幕无关。
-    private func speechResumeTarget() -> (chapter: Int, char: Int) {
-        guard let content, content.chapterCount > 0 else { return (0, 0) }
-        let lastChapter = content.chapterCount - 1
-
-        if let r = store.speechPosition(for: bookID), content.chapters.indices.contains(r.chapter) {
-            let length = content.chapterText(at: r.chapter).length
-            if r.char < length { return (r.chapter, r.char) }
-            // 记录停在章末：接着读下一章；已经是最后一章就读完整本从头再来
-            return r.chapter < lastChapter ? (r.chapter + 1, 0) : (0, 0)
-        }
-
-        let chapter = min(max(0, chapterIndex), lastChapter)
-        return (chapter, max(0, scrollProxy.characterIndex))
-    }
-
-    /// 所有「开始 / 继续朗读」的唯一入口：先把朗读游标落到指定文字位置，
-    /// 再决定要不要把屏幕带过去，最后交给 `speakNextScrollChunk()` 逐段往下读。
-    ///
-    /// - Parameters:
-    ///   - chapter: 目标章
-    ///   - char: 目标章内字符位置
-    ///   - anchorViewport: 是否把视口滚到朗读位置
-    ///   - snapToParagraph: 是否把起点回退到段落开头（长按选句时必须为 false，
-    ///     否则会把用户选中的句子往后拽到段首）
-    private func beginSpeaking(
-        chapter: Int,
-        char: Int,
-        anchorViewport: Bool,
-        snapToParagraph: Bool = true
-    ) {
-        guard let content, content.chapters.indices.contains(chapter) else { return }
-        let start = snapToParagraph ? paragraphStart(chapter: chapter, char: char) : max(0, char)
-
-        speechChapter = chapter
-        scrollSpeechOffset = start
-        speechBase = start
-        speechHighlight = nil
-        store.setSpeechPosition(bookID: bookID, chapter: chapter, char: start)
-
-        if anchorViewport {
-            chapterIndex = chapter
-            scrollAnchorChapter = chapter
-            scrollAnchorChar = start
-            scrollProxy.chapter = chapter
-            scrollProxy.characterIndex = start
-            // 用户主动开播，恢复自动跟随
-            scrollProxy.resumeFollowing()
-            scrollProxy.scroll(toChapter: chapter, char: start, animated: true)
-        }
-        #if DEBUG
-        print("[Reader] speak ch=\(chapter) start=\(start) anchor=\(anchorViewport) snap=\(snapToParagraph)")
-        #endif
-        speakNextScrollChunk()
-    }
-
-    private func stopListening() {
-        speech.stop()
-        speechHighlight = nil
-    }
-
-    /// 把引擎给的相对区间换算成章内坐标，画高亮并记住位置
-    private func applySpokenRange(_ range: NSRange?) {
-        guard speech.isActive, let range, range.length > 0 else {
+    /// 高亮只在「正在听的就是这本书」时贴回正文。
+    /// 听 A 看 B 时这里会自动清空，不干扰正在读的页面。
+    private func syncListeningHighlight() {
+        guard listening.bookID == bookID,
+              let range = listening.spokenRange,
+              range.length > 0 else {
             if speechHighlight != nil { speechHighlight = nil }
             return
         }
-        let absolute = NSRange(location: speechBase + range.location, length: range.length)
-        speechHighlight = absolute
-        // 逐句记录，重开时从这里续读
-        store.setSpeechPosition(bookID: bookID, chapter: speechChapter, char: absolute.location)
-        scrollProxy.ensureVisible(chapter: speechChapter, char: absolute.location)
+        speechHighlight = range
+        scrollProxy.ensureVisible(chapter: listening.spokenChapter, char: range.location)
     }
 
-    /// 长按选中一句后点气泡 ▶：从这句的开头开始读。
+    /// 长按选中一句后点气泡 ▶：把听书起点定位到这句，并打开听书界面。
     /// 点击屏幕不再触发朗读——点到的位置无法可靠对应到某一块文字，
     /// 必须先长按选中，把要读的句子确定下来。
     private func startSpeechFromSelection(chapter: Int, char: Int) {
         guard let content, content.chapters.indices.contains(chapter) else { return }
-        // char 已经是选中句的起点，不再回退到段落开头
-        beginSpeaking(chapter: chapter, char: char, anchorViewport: true, snapToParagraph: false)
-    }
-
-    /// 按段朗读，读完自动往下滚，跨章连续。
-    ///
-    /// 读哪一章以 `speechChapter` 为准，不能用 `chapterIndex` ——
-    /// 后者跟着视口走，用户一滑就会把朗读带到别的章去。
-    private func speakNextScrollChunk() {
-        guard let content, content.chapters.indices.contains(speechChapter) else { return }
-        let text = content.chapterText(at: speechChapter)
-        if scrollSpeechOffset >= text.length {
-            if speechChapter + 1 < content.chapterCount {
-                speechChapter += 1
-                scrollSpeechOffset = 0
-                speechBase = 0
-                // 只有在跟随时才把视口带到下一章；用户正在别处看就别动他的屏幕
-                if scrollProxy.isFollowingSpeech {
-                    chapterIndex = speechChapter
-                    scrollAnchorChapter = speechChapter
-                    scrollAnchorChar = 0
-                    scrollProxy.chapter = speechChapter
-                    scrollProxy.characterIndex = 0
-                    refreshToken = UUID()
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in
-                    guard speech.isActive else { return }
-                    speakNextScrollChunk()
-                }
-            } else {
-                // 全书读完：清掉续读记录，下次点播放从头开始，
-                // 否则记录停在章末，再点播放会立刻又判定「已读完」而一声不响。
-                speech.stop()
-                speechHighlight = nil
-                store.clearSpeechPosition(bookID: bookID)
-                speechChapter = 0
-                scrollSpeechOffset = 0
-                speechBase = 0
-            }
-            return
+        if listening.isActive && listening.bookID == bookID {
+            // 本来就在听这本：只是换个起点，别把声音掐掉
+            listening.seekTo(chapter: chapter, char: char)
+        } else {
+            // 没在听（或听的是别的书）：装好这本 + 定位到选中句，等用户按播放
+            listening.prepare(bookID: bookID, fallbackChapter: chapter, fallbackChar: char)
+            listening.locate(chapter: chapter, char: char)
         }
-
-        let start = max(0, scrollSpeechOffset)
-        let (chunk, next) = scrollChunk(in: text, from: start)
-        guard !chunk.isEmpty else {
-            scrollSpeechOffset = text.length
-            speakNextScrollChunk()
-            return
-        }
-        scrollSpeechOffset = next
-        speechBase = start
-        scrollProxy.follow(chapter: speechChapter, char: start)
-        #if DEBUG
-        print("[Speech] chunk ch=\(speechChapter) start=\(start) next=\(next) following=\(scrollProxy.isFollowingSpeech)")
-        #endif
-
-        speech.onAdvance = { [self] in speakNextScrollChunk() }
-        speech.start(
-            text: chunk,
-            rate: settings.speechRate,
-            profile: settings.voiceProfile
-        )
-    }
-
-    /// 段落起点：上一个换行符之后。中文 txt 通常一段一行，正好对应视觉上的自然段。
-    private func paragraphStart(chapter: Int, char: Int) -> Int {
-        guard let content, content.chapters.indices.contains(chapter) else { return max(0, char) }
-        let text = content.chapterText(at: chapter)
-        guard text.length > 0 else { return 0 }
-        var i = min(max(0, char), text.length - 1)
-        while i > 0 {
-            if text.substring(with: NSRange(location: i - 1, length: 1)) == "\n" {
-                break
-            }
-            i -= 1
-        }
-        return i
-    }
-
-    /// 从 offset 起取一小段（约 260 字），尽量在句末或段末收尾
-    private func scrollChunk(in text: NSString, from offset: Int) -> (String, Int) {
-        guard offset < text.length else { return ("", text.length) }
-        let limit = min(text.length, offset + 260)
-        var cut = limit
-        if limit < text.length {
-            let terminators: Set<Character> = ["。", "！", "？", "；", "…", "\n"]
-            var i = limit
-            var steps = 0
-            while i > offset + 40, steps < 90 {
-                let unit = text.substring(with: NSRange(location: i - 1, length: 1))
-                if let ch = unit.first, terminators.contains(ch) {
-                    cut = i
-                    break
-                }
-                i -= 1
-                steps += 1
-            }
-        }
-        let chunk = text.substring(with: NSRange(location: offset, length: max(0, cut - offset)))
-        return (chunk, cut)
+        showPlayer = true
     }
 
     // MARK: - 进度 / 书签
@@ -650,18 +451,16 @@ struct ReaderView: View {
         showBookmarks = false
         persistScrollProgress(chapter: target, charIndex: offset, throttled: false)
 
-        if speech.isActive {
-            // 正在听的时候跳走：朗读跟着换地方，别一边显示新章节一边念旧位置。
-            // 这是用户明确点的跳转，视口该跟着过去。
-            beginSpeaking(chapter: target, char: offset, anchorViewport: true, snapToParagraph: false)
-        } else {
-            // 跳章是「我要在这儿」，同步朗读游标；下次播放从这儿起，
-            // 而不是回到很久以前停下的那一章。
-            speechChapter = target
-            scrollSpeechOffset = offset
-            speechBase = offset
-            store.setSpeechPosition(bookID: bookID, chapter: target, char: offset)
-            refreshToken = UUID()
+        // 只在「正在听的就是这本书」时把朗读带过来。
+        // 听 A 看 B 时，在 B 里跳章绝不能动 A 的播放位置。
+        if listening.bookID == bookID {
+            if listening.isActive {
+                // 正在听这本：朗读跟着换地方，别一边显示新章节一边念旧位置。
+                listening.play(bookID: bookID, chapter: target, char: offset, snapToParagraph: false)
+            } else {
+                // 暂停中：同步朗读记录，下次播从这儿起
+                store.setSpeechPosition(bookID: bookID, chapter: target, char: offset)
+            }
         }
     }
 
@@ -720,14 +519,10 @@ struct ReaderView: View {
         scrollAnchorChar = min(chapterLength, max(0, Int(savedRatio * Double(chapterLength))))
         scrollProxy.chapter = chapterIndex
         scrollProxy.characterIndex = scrollAnchorChar
-        speechChapter = chapterIndex
-        // 朗读游标也先对齐到阅读位置，避免「刚打开还没播」时游标停在 0
-        scrollSpeechOffset = scrollAnchorChar
-        speechBase = scrollAnchorChar
+        // 如果打开的就是正在听的那本，把当前朗读句贴回来
+        syncListeningHighlight()
         settings.applyBrightness()
         UIApplication.shared.isIdleTimerDisabled = settings.keepScreenOn
-        pendingListenStart = autoStartListen
-            || ProcessInfo.processInfo.arguments.contains("--listen")
         let args = ProcessInfo.processInfo.arguments
         if args.contains("--scroll-mid") {
             scrollAnchorChar = Int(Double(chapterLength) * 0.45)

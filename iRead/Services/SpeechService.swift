@@ -141,6 +141,12 @@ final class SpeechService: NSObject, ObservableObject {
         PiperSynthesizer.shared.isAvailable(model)
     }
 
+    /// 某个音色档位在当前设备上是否可用（粤语依赖系统是否装了 yue-HK）
+    static func isAvailable(_ profile: VoiceProfile) -> Bool {
+        if let model = profile.piperModel { return isPiperAvailable(model) }
+        return isCantoneseAvailable
+    }
+
     // MARK: - 播放控制
 
     /// 朗读一段文本。已处于听书模式时再次调用会替换当前内容（用于换段/改语速）。
