@@ -21,7 +21,6 @@ final class ReaderSettings: ObservableObject {
         static let speechVoiceID = "iRead.setting.speechVoiceID"
         static let speechEngine = "iRead.setting.speechEngine"
         static let voiceProfile = "iRead.setting.voiceProfile"
-        static let textTint = "iRead.setting.textTint"
         static let eyeCare = "iRead.setting.eyeCare"
     }
 
@@ -60,23 +59,9 @@ final class ReaderSettings: ObservableObject {
             if speechEngine != voiceProfile.engine { speechEngine = voiceProfile.engine }
         }
     }
-    /// 正文字色，叠加在主题背景之上
-    @Published var textTint: TextTint {
-        didSet { defaults.set(textTint.rawValue, forKey: Key.textTint) }
-    }
     /// 护眼模式：在正文上叠一层暖色滤镜，降低蓝光
     @Published var eyeCare: Bool {
         didSet { defaults.set(eyeCare, forKey: Key.eyeCare) }
-    }
-
-    /// 实际用于正文的色值（主题前景色被 textTint 覆盖）
-    var effectiveForeground: Color { Color(hex: effectiveForegroundHex) }
-    var effectiveUIForeground: UIColor { UIColor(hex: effectiveForegroundHex) }
-
-    private var effectiveForegroundHex: UInt32 {
-        // 夜间背景下墨黑/棕/灰这些深色字会糊掉，统一回落到主题前景色（番茄同样做法）
-        guard theme != .night else { return theme.fgHex }
-        return textTint.hexValue ?? theme.fgHex
     }
 
     private let defaults = UserDefaults.standard
@@ -97,7 +82,6 @@ final class ReaderSettings: ObservableObject {
         speechVoiceID = d.string(forKey: Key.speechVoiceID) ?? ""
         let engine = SpeechEngineKind(rawValue: d.string(forKey: Key.speechEngine) ?? "") ?? .piper
         speechEngine = engine
-        textTint = TextTint(rawValue: d.string(forKey: Key.textTint) ?? "") ?? .auto
         eyeCare = d.object(forKey: Key.eyeCare) as? Bool ?? false
         // 旧版本只存了引擎；没有档位记录时按引擎推断，避免升级后听感突变
         if let raw = d.string(forKey: Key.voiceProfile), let saved = VoiceProfile.fromStored(raw) {
@@ -135,7 +119,6 @@ final class ReaderSettings: ObservableObject {
         speechVoiceID = ""
         speechEngine = .piper
         voiceProfile = .neuralFemale
-        textTint = .auto
         eyeCare = false
         applyBrightness()
     }

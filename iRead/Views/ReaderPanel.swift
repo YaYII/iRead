@@ -29,8 +29,6 @@ struct ReaderPanel: View {
                 divider
                 fontRow
                 divider
-                colorRow
-                divider
                 backgroundRow
                 divider
                 otherRow
@@ -157,48 +155,6 @@ struct ReaderPanel: View {
         .foregroundStyle(dim ? theme.secondary.opacity(0.35) : theme.foreground)
         .frame(width: 52, height: 32)
         .background(Capsule().fill(theme.foreground.opacity(0.07)))
-    }
-
-    // MARK: - 文字颜色
-
-    private var colorRow: some View {
-        HStack(spacing: 12) {
-            Text("颜色")
-                .font(.system(size: 12))
-                .foregroundStyle(theme.secondary)
-                .frame(width: 30, alignment: .leading)
-
-            ForEach(TextTint.allCases) { tint in
-                Button {
-                    withAnimation(.easeInOut(duration: 0.15)) { settings.textTint = tint }
-                } label: {
-                    ZStack {
-                        Circle()
-                            .fill(tint.swatch(theme))
-                        if tint == .auto {
-                            // 跟随主题：半白半黑表示「自动」
-                            Circle()
-                                .trim(from: 0.5, to: 1)
-                                .fill(theme.background)
-                                .rotationEffect(.degrees(-90))
-                        }
-                        Circle()
-                            .strokeBorder(
-                                settings.textTint == tint ? theme.accent : theme.secondary.opacity(0.3),
-                                lineWidth: settings.textTint == tint ? 2 : 0.5
-                            )
-                    }
-                    .frame(width: 26, height: 26)
-                    .padding(2)
-                }
-                .buttonStyle(.plain)
-            }
-            Spacer(minLength: 0)
-        }
-        .frame(height: 44)
-        // 夜间模式下深色字不可用，整行置灰（色值本身仍保留，切回浅色主题即恢复）
-        .opacity(theme == .night ? 0.35 : 1)
-        .disabled(theme == .night)
     }
 
     // MARK: - 背景

@@ -643,7 +643,5 @@ struct ReaderView: View {
         // 仅供截图：直接弹出番茄式设置面板
         if args.contains("--panel") { showSettings = true }
         if args.contains("--eyecare") { settings.eyeCare = true }
-        if args.contains("--tint-brown") { settings.textTint = .brown }
-        if args.contains("--tint-cream") { settings.textTint = .cream }
     }
 }

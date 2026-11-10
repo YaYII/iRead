@@ -148,52 +148,6 @@ enum ReadingTheme: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-// MARK: - 文字颜色
-
-/// 正文文字颜色。叠加在主题背景之上，`auto` 表示跟随主题自带的配色。
-enum TextTint: String, CaseIterable, Identifiable, Codable {
-    case auto
-    case ink
-    case brown
-    case slate
-    case cream
-    case gray
-
-    var id: String { rawValue }
-
-    var name: String {
-        switch self {
-        case .auto: return "跟随主题"
-        case .ink: return "墨黑"
-        case .brown: return "深棕"
-        case .slate: return "灰蓝"
-        case .cream: return "米白"
-        case .gray: return "浅灰"
-        }
-    }
-
-    /// 色板里显示的圆点颜色（auto 用主题前景色）
-    func swatch(_ theme: ReadingTheme) -> Color {
-        Color(hex: hexValue ?? theme.fgHex)
-    }
-
-    func uiColor(_ theme: ReadingTheme) -> UIColor {
-        UIColor(hex: hexValue ?? theme.fgHex)
-    }
-
-    /// nil 表示跟随主题
-    var hexValue: UInt32? {
-        switch self {
-        case .auto: return nil
-        case .ink: return 0x1F1D1A
-        case .brown: return 0x5B4433
-        case .slate: return 0x3A4652
-        case .cream: return 0xEDE6D8
-        case .gray: return 0x8C8C8C
-        }
-    }
-}
-
 // MARK: - 听书引擎
 
 enum SpeechEngineKind: String, CaseIterable, Identifiable, Codable {

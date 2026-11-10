@@ -1,229 +1,142 @@
 import SwiftUI
 import UIKit
-import CoreText
 
-// MARK: - 整章排版结果
+// MARK: - 单章文字视图
 
-/// 把整章文本在固定宽度下排成「一整条」，不做分页。
-/// 与 ChapterTextProvider 共用同一份带属性字符串，所以字形、行距、首行缩进完全一致。
-final class ChapterLayout {
-    let attributed: NSAttributedString
-    let width: CGFloat
-    let height: CGFloat
-    let frame: CTFrame
+/// 一章正文。用系统 `UITextView`（TextKit 1）承载，**不再自己画字**。
+///
+/// 这样长按选字、放大镜、左右选中手柄、复制 / 查询 / 翻译全部是系统行为，
+/// 手感和别家阅读器一致；我们只在编辑菜单最前面加一个「从这里朗读」。
+/// 自己用 CoreText 画字 + 自绘选中框，永远做不出系统那套选中手感。
+final class ChapterTextView: UITextView, UITextViewDelegate {
 
-    private let lineTops: [CGFloat]
-    private let lineRanges: [NSRange]
-    /// 行高（ascent + descent + leading），供高亮矩形使用
-    private let lineHeights: [CGFloat]
-    /// 缓存的 CTLine，供命中测试/高亮复用
-    private let lines: [CTLine]
+    /// 点「从这里朗读」的回调，参数是选中区间（章内字符坐标）
+    var onSpeakSelection: ((NSRange) -> Void)?
 
-    init(attributed: NSAttributedString, width: CGFloat) {
-        self.attributed = attributed
-        self.width = max(1, width)
+    /// 当前朗读高亮区间，避免重复写 textStorage
+    private var speechRange: NSRange?
 
-        let framesetter = CTFramesetterCreateWithAttributedString(attributed as CFAttributedString)
-        var fitRange = CFRange()
-        let suggested = CTFramesetterSuggestFrameSizeWithConstraints(
-            framesetter,
-            CFRange(location: 0, length: 0),
-            nil,
-            CGSize(width: self.width, height: .greatestFiniteMagnitude),
-            &fitRange
-        )
-        let textHeight = max(1, ceil(suggested.height) + 4)
-        self.height = textHeight
+    init(attributed: NSAttributedString, width: CGFloat, theme: ReadingTheme) {
+        super.init(frame: .zero, textContainer: nil)
 
-        let path = CGPath(rect: CGRect(x: 0, y: 0, width: self.width, height: textHeight), transform: nil)
-        self.frame = CTFramesetterCreateFrame(
-            framesetter,
-            CFRange(location: 0, length: 0),
-            path,
-            nil
-        )
-
-        let lines = CTFrameGetLines(frame) as? [CTLine] ?? []
-        var origins = [CGPoint](repeating: .zero, count: lines.count)
-        if !lines.isEmpty {
-            CTFrameGetLineOrigins(frame, CFRange(location: 0, length: 0), &origins)
-        }
-
-        var tops: [CGFloat] = []
-        var ranges: [NSRange] = []
-        var heights: [CGFloat] = []
-        tops.reserveCapacity(lines.count)
-        ranges.reserveCapacity(lines.count)
-        heights.reserveCapacity(lines.count)
-
-        for (i, line) in lines.enumerated() {
-            var ascent: CGFloat = 0
-            var descent: CGFloat = 0
-            var leading: CGFloat = 0
-            _ = CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
-            // CoreText 的行原点是基线（以路径左下角为原点），换算成内容顶部的 y
-            let baselineFromTop = textHeight - origins[i].y
-            tops.append(max(0, baselineFromTop - ascent))
-            heights.append(max(1, ascent + descent + leading))
-
-            let r = CTLineGetStringRange(line)
-            ranges.append(NSRange(location: max(0, r.location), length: max(0, r.length)))
-        }
-
-        self.lineTops = tops
-        self.lineRanges = ranges
-        self.lineHeights = heights
-        self.lines = lines
-    }
-
-    /// 某字符区间在内容坐标系（原点左上）里的高亮矩形，每行一块。
-    /// 只做几何换算，不重新排版，因此可以每读一句刷一次。
-    func highlightRects(for range: NSRange) -> [CGRect] {
-        guard range.length > 0, !lines.isEmpty else { return [] }
-        var out: [CGRect] = []
-        let lower = max(0, range.location)
-        let upper = range.location + range.length
-
-        for (i, line) in lines.enumerated() {
-            let r = lineRanges[i]
-            guard r.length > 0 else { continue }
-            let lo = max(lower, r.location)
-            let hi = min(upper, r.location + r.length)
-            guard hi > lo else { continue }
-            let x0 = CTLineGetOffsetForStringIndex(line, lo, nil)
-            var x1 = CTLineGetOffsetForStringIndex(line, hi, nil)
-            if x1 <= x0 { x1 = x0 + 6 }
-            out.append(
-                CGRect(
-                    x: x0,
-                    y: lineTops[i] - 1,
-                    width: x1 - x0,
-                    height: lineHeights[i] + 1
-                )
-            )
-        }
-        return out
-    }
-
-    /// 点（内容坐标系，原点左上）落在哪个字符上
-    func characterIndex(at point: CGPoint) -> Int {
-        guard !lineRanges.isEmpty else { return 0 }
-        var idx = 0
-        for (i, top) in lineTops.enumerated() {
-            if top <= point.y + 2 {
-                idx = i
-            } else {
-                break
-            }
-        }
-        guard idx < lines.count else { return lineRanges[0].location }
-        let line = lines[idx]
-        let hit = CTLineGetStringIndexForPosition(line, CGPoint(x: max(0, point.x), y: 0))
-        guard hit != kCFNotFound else { return lineRanges[idx].location }
-        return min(max(0, hit), max(0, attributed.length - 1))
-    }
-
-    /// 某个字符所在行的顶部偏移（内容坐标系，原点在顶部）
-    func topOffset(forCharacter index: Int) -> CGFloat {
-        guard !lineRanges.isEmpty else { return 0 }
-        let clamped = min(max(0, index), max(0, attributed.length - 1))
-        var low = 0
-        var high = lineRanges.count - 1
-        while low < high {
-            let mid = (low + high) / 2
-            let r = lineRanges[mid]
-            if r.location + max(1, r.length) <= clamped {
-                low = mid + 1
-            } else {
-                high = mid
-            }
-        }
-        return lineTops[low]
-    }
-
-    /// 内容坐标 y 处（顶部）对应的字符位置
-    func characterIndex(atY y: CGFloat) -> Int {
-        guard !lineTops.isEmpty else { return 0 }
-        var idx = 0
-        for (i, top) in lineTops.enumerated() {
-            if top <= y + 2 {
-                idx = i
-            } else {
-                break
-            }
-        }
-        return lineRanges[idx].location
-    }
-}
-
-// MARK: - 单章绘制视图
-
-final class ChapterTextView: UIView {
-    var layout: ChapterLayout?
-
-    /// 正在朗读的字符区间（章内坐标）。只重绘，不重排版。
-    var highlightRange: NSRange? {
-        didSet {
-            guard oldValue != highlightRange else { return }
-            setNeedsDisplay()
-        }
-    }
-    var highlightColor: UIColor = .clear {
-        didSet {
-            guard oldValue != highlightColor else { return }
-            setNeedsDisplay()
-        }
-    }
-
-    /// 长按选中的区间（章内坐标）
-    var selectionRange: NSRange? {
-        didSet {
-            guard oldValue != selectionRange else { return }
-            setNeedsDisplay()
-        }
-    }
-    var selectionColor: UIColor = .clear {
-        didSet {
-            guard oldValue != selectionColor else { return }
-            setNeedsDisplay()
-        }
-    }
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
+        isEditable = false
+        isSelectable = true
+        isScrollEnabled = false
         backgroundColor = .clear
-        isOpaque = false
-        isUserInteractionEnabled = false
-        contentMode = .redraw
+        textContainerInset = .zero
+        textContainer.lineFragmentPadding = 0
+        // 容器尺寸自己说了算：跟随视图宽度会在 sizeThatFits 时把高度截断
+        textContainer.widthTracksTextView = false
+        textContainer.heightTracksTextView = false
+        textContainer.size = CGSize(width: max(1, width), height: 100_000)
+        showsVerticalScrollIndicator = false
+        showsHorizontalScrollIndicator = false
+        dataDetectorTypes = []
+        // 拖拽会和滚动抢手势，阅读场景用不上
+        textDragInteraction?.isEnabled = false
+        tintColor = theme.uiAccent
+        delegate = self
+
+        attributedText = attributed
+        layoutManager.ensureLayout(for: textContainer)
+        let textHeight = ceil(layoutManager.usedRect(for: textContainer).height) + 2
+        frame = CGRect(x: 0, y: 0, width: max(1, width), height: max(1, textHeight))
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    override func draw(_ rect: CGRect) {
-        guard let context = UIGraphicsGetCurrentContext(), let layout else { return }
+    // MARK: 朗读高亮
 
-        // 选中 / 朗读高亮都画在文字之下，文字本身不变色，读起来不刺眼
-        func fill(_ range: NSRange?, _ color: UIColor) {
-            guard let range, range.length > 0, color.cgColor.alpha > 0 else { return }
-            let rects = layout.highlightRects(for: range)
-            guard !rects.isEmpty else { return }
-            context.saveGState()
-            context.setFillColor(color.cgColor)
-            for r in rects {
-                // 必须走 CGContext.fillPath：UIBezierPath.fill() 用的是 UIKit 当前填充色，
-                // 会忽略上面设的 CGContext 颜色，导致高亮串色。
-                context.addPath(UIBezierPath(roundedRect: r.insetBy(dx: -2, dy: 0), cornerRadius: 3).cgPath)
-                context.fillPath()
-            }
-            context.restoreGState()
+    /// 用背景色属性做高亮，系统选中时两者不会互相打架
+    func setSpeechHighlight(_ range: NSRange?, color: UIColor) {
+        guard range != speechRange else { return }
+        let length = textStorage.length
+        textStorage.beginEditing()
+        if let old = speechRange, old.length > 0, old.location + old.length <= length {
+            textStorage.removeAttribute(.backgroundColor, range: old)
         }
-        fill(selectionRange, selectionColor)
-        fill(highlightRange, highlightColor)
+        if let range, range.length > 0, range.location + range.length <= length {
+            textStorage.addAttribute(.backgroundColor, value: color, range: range)
+        }
+        textStorage.endEditing()
+        speechRange = range
+    }
 
-        context.textMatrix = .identity
-        context.translateBy(x: 0, y: bounds.height)
-        context.scaleBy(x: 1, y: -1)
-        CTFrameDraw(layout.frame, context)
+    // MARK: 坐标换算
+
+    /// 视图内坐标 → 章内字符
+    func characterIndex(atLocalPoint point: CGPoint) -> Int {
+        guard textStorage.length > 0 else { return 0 }
+        let p = CGPoint(x: point.x - textContainerInset.left, y: point.y - textContainerInset.top)
+        guard let pos = closestPosition(to: p) else { return 0 }
+        return offset(from: beginningOfDocument, to: pos)
+    }
+
+    /// 某字符所在行的顶部（视图坐标，原点左上）
+    func topOffset(forCharacter index: Int) -> CGFloat {
+        let length = textStorage.length
+        guard length > 0 else { return 0 }
+        let clamped = min(max(0, index), length - 1)
+        let rect = lineRect(forCharacter: clamped)
+        if !rect.isEmpty { return rect.minY }
+        // 换行符这类没有实体字形的位置，退回前一个字符所在行
+        if clamped > 0 {
+            let prev = lineRect(forCharacter: clamped - 1)
+            if !prev.isEmpty { return prev.minY }
+        }
+        return 0
+    }
+
+    private func lineRect(forCharacter index: Int) -> CGRect {
+        let glyphRange = layoutManager.glyphRange(
+            forCharacterRange: NSRange(location: index, length: 1),
+            actualCharacterRange: nil
+        )
+        guard glyphRange.length > 0 else { return .zero }
+        return layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+    }
+
+    // MARK: 编辑菜单
+
+    /// 在系统菜单最前面插入「从这里朗读」。
+    /// 放在后面会被系统折叠到第二页，用户根本翻不到。
+    func textView(
+        _ textView: UITextView,
+        editMenuForTextIn range: NSRange,
+        suggestedActions: [UIMenuElement]
+    ) -> UIMenu? {
+        makeEditMenu(for: range, suggestedActions: suggestedActions)
+    }
+
+    /// iOS 26 起改用多区间版本；不实现它，系统会回落到上面那个已废弃的方法
+    @available(iOS 26.0, *)
+    func textView(
+        _ textView: UITextView,
+        editMenuForTextInRanges ranges: [NSValue],
+        suggestedActions: [UIMenuElement]
+    ) -> UIMenu? {
+        guard let first = ranges.first?.rangeValue else { return nil }
+        var lo = first.location
+        var hi = first.location + first.length
+        for value in ranges.dropFirst() {
+            let r = value.rangeValue
+            lo = min(lo, r.location)
+            hi = max(hi, r.location + r.length)
+        }
+        return makeEditMenu(for: NSRange(location: lo, length: max(0, hi - lo)), suggestedActions: suggestedActions)
+    }
+
+    private func makeEditMenu(for range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
+        guard range.length > 0 else { return nil }
+        let speak = UIAction(
+            title: "从这里朗读",
+            image: UIImage(systemName: "play.fill")
+        ) { [weak self] _ in
+            guard let self else { return }
+            let start = SentenceRange.readableStart(at: range.location, in: self.text as NSString)
+            self.onSpeakSelection?(NSRange(location: start, length: max(1, range.length)))
+        }
+        return UIMenu(children: [speak] + suggestedActions)
     }
 }
 
@@ -251,8 +164,8 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
     private let keepBehind = 3
     private let keepAhead = 4
 
-    private var layouts: [Int: ChapterLayout] = [:]
     private var views: [Int: ChapterTextView] = [:]
+    private var heights: [Int: CGFloat] = [:]
     private var tops: [Int: CGFloat] = [:]
     /// 当前已加载的连续章节区间
     private var loadedRange: ClosedRange<Int>?
@@ -266,31 +179,13 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
 
     var onPositionChange: ((Int, Int) -> Void)?
     var onTap: (() -> Void)?
-    /// 气泡 ▶：回调（章号，选中句在章内的起点）
+    /// 编辑菜单「从这里朗读」的回调（章号，选中句在章内的起点）
     var onStartSpeech: ((Int, Int) -> Void)?
 
-    /// 当前主题，供选中气泡取色
+    /// 当前主题
     private var currentTheme: ReadingTheme = .paper
-    /// 长按选中状态
-    private var selection: (chapter: Int, range: NSRange)?
-    private lazy var bubble: SelectionBubble = {
-        let view = SelectionBubble()
-        view.onPlay = { [weak self] in
-            guard let self, let selection = self.selection else { return }
-            let chapter = selection.chapter
-            let char = selection.range.location
-            self.clearSelection()
-            self.onStartSpeech?(chapter, char)
-        }
-        view.onCopy = { [weak self] in
-            guard let self, let selection = self.selection,
-                  let layout = self.layouts[selection.chapter] else { return }
-            let text = layout.attributed.attributedSubstring(from: selection.range).string
-            UIPasteboard.general.string = text
-            self.clearSelection()
-        }
-        return view
-    }()
+    /// 当前朗读高亮（重建窗口后要补画回去）
+    private var highlight: (chapter: Int, range: NSRange?, color: UIColor) = (0, nil, .clear)
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -312,66 +207,54 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         doubleTap.cancelsTouchesInView = false
         addGestureRecognizer(doubleTap)
         tap.require(toFail: doubleTap)
-
-        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
-        longPress.minimumPressDuration = 0.35
-        longPress.cancelsTouchesInView = false
-        addGestureRecognizer(longPress)
-        // 长按选完字不要顺带把工具栏切一下
-        tap.require(toFail: longPress)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     @objc private func handleTap() {
-        if selection != nil { clearSelection(); return }
+        if hasSelection { clearSelection(); return }
         onTap?()
     }
 
     /// 双击不再触发朗读；识别器只用来让上面的单击失败
     @objc private func ignoreDoubleTap() {}
 
-    /// 长按：选中手指下这一句，弹出「从这里读 / 复制」
-    @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
-        guard gesture.state == .began else { return }
-        selectSentence(at: gesture.location(in: self))
+    // MARK: 选中
+
+    var hasSelection: Bool {
+        views.values.contains { $0.selectedRange.length > 0 }
     }
 
-    /// 选中某一句（也供自测注入）
+    func clearSelection() {
+        for (_, view) in views where view.selectedRange.length > 0 {
+            view.selectedRange = NSRange(location: 0, length: 0)
+        }
+    }
+
+    /// 选中某一句（仅供自测注入：`--longpress x,y`）
     func selectSentence(at pointInView: CGPoint) {
         guard let hit = characterIndex(near: pointInView),
-              let layout = layouts[hit.chapter] else { return }
-
-        let range = SentenceRange.containing(hit.char, in: layout.attributed.string as NSString)
+              let view = views[hit.chapter] else {
+            #if DEBUG
+            print("[Select] MISS point=\(pointInView) offset=\(contentOffset.y) inset=\(contentInset.top)")
+            #endif
+            return
+        }
+        let range = SentenceRange.containing(hit.char, in: view.text as NSString)
         guard range.length > 0 else { return }
-
-        clearSelection(keepBubble: true)
-        selection = (hit.chapter, range)
-        if let view = views[hit.chapter] {
-            view.selectionColor = currentTheme.uiSelection
-            view.selectionRange = range
-        }
-
-        let rects = layout.highlightRects(for: range)
-        guard let first = rects.first, let top = tops[hit.chapter] else { return }
-        // 转成滚动容器的内容坐标，气泡跟着这段文字走
-        let rect = first.offsetBy(dx: horizontalInset, dy: top)
-        bubble.present(above: rect, in: self, theme: currentTheme)
-    }
-
-    func clearSelection(keepBubble: Bool = false) {
-        selection = nil
-        for (_, view) in views where view.selectionRange != nil {
-            view.selectionRange = nil
-        }
-        if !keepBubble { bubble.dismiss() }
+        view.selectedRange = range
+        view.becomeFirstResponder()
+        #if DEBUG
+        // 自测注入：选中后直接打印结果，系统编辑菜单只认真实触摸，这里不做模拟
+        print("[Select] point=\(pointInView) ch=\(hit.chapter) char=\(hit.char) range=\(range)")
+        #endif
     }
 
     /// 视图坐标（含滚动偏移）→（章，字符）
     func characterIndex(near pointInView: CGPoint) -> (chapter: Int, char: Int)? {
         let contentPoint = CGPoint(
             x: pointInView.x - horizontalInset,
-            y: pointInView.y + contentOffset.y + contentInset.top
+            y: pointInView.y + contentOffset.y
         )
         return characterIndex(at: contentPoint)
     }
@@ -380,30 +263,31 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
     private func characterIndex(at point: CGPoint) -> (chapter: Int, char: Int)? {
         guard let loadedRange else { return nil }
         for ch in loadedRange {
-            guard let top = tops[ch], let layout = layouts[ch] else { continue }
-            if point.y >= top, point.y <= top + layout.height {
-                return (ch, layout.characterIndex(at: CGPoint(x: point.x, y: point.y - top)))
+            guard let top = tops[ch], let height = heights[ch], let view = views[ch] else { continue }
+            if point.y >= top, point.y <= top + height {
+                return (ch, view.characterIndex(atLocalPoint: CGPoint(x: point.x, y: point.y - top)))
             }
         }
         return nil
     }
 
-    /// 更新朗读高亮（只影响一章，不触发重排）
+    // MARK: 朗读高亮
+
     func setHighlight(chapter: Int, range: NSRange?, color: UIColor) {
+        highlight = (chapter, range, color)
         for (ch, view) in views {
             if ch == chapter, let range {
-                view.highlightColor = color
-                view.highlightRange = range
-            } else if view.highlightRange != nil {
-                view.highlightRange = nil
+                view.setSpeechHighlight(range, color: color)
+            } else {
+                view.setSpeechHighlight(nil, color: .clear)
             }
         }
     }
 
     /// 让某个字符所在行保持可见（朗读跟随用）
     func ensureVisible(chapter: Int, char: Int, animated: Bool = true) {
-        guard let layout = layouts[chapter], let top = tops[chapter] else { return }
-        let y = top + layout.topOffset(forCharacter: char)
+        guard let view = views[chapter], let top = tops[chapter] else { return }
+        let y = top + view.topOffset(forCharacter: char)
         let visibleTop = contentOffset.y + contentInset.top
         let visibleBottom = contentOffset.y + bounds.height - contentInset.bottom
         let upper = visibleBottom - 90
@@ -458,7 +342,6 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
             didConfigure = true
             rebuild(center: startChapter, restoreChar: startCharacter)
         } else {
-            // 宽度或内边距变化时只需要重新摆放
             relayoutPositions()
         }
 
@@ -472,7 +355,7 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
     private func rebuild(center: Int, restoreChar: Int) {
         for (_, v) in views { v.removeFromSuperview() }
         views.removeAll()
-        layouts.removeAll()
+        heights.removeAll()
         tops.removeAll()
 
         let lo = max(0, center - 1)
@@ -481,6 +364,11 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         for ch in lo...hi { loadChapter(ch) }
 
         relayoutPositions()
+        // 重建后把朗读高亮补回去
+        if let view = views[highlight.chapter], let range = highlight.range {
+            view.setSpeechHighlight(range, color: highlight.color)
+        }
+
         pendingRestore = (center, max(0, restoreChar))
         if bounds.height > 40 {
             pendingRestore = nil
@@ -489,16 +377,24 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
     }
 
     @discardableResult
-    private func loadChapter(_ ch: Int) -> ChapterLayout? {
-        if let existing = layouts[ch] { return existing }
+    private func loadChapter(_ ch: Int) -> ChapterTextView? {
+        if let existing = views[ch] { return existing }
         guard ch >= 0, ch < chapterCount, let provider = attributedProvider else { return nil }
-        let layout = ChapterLayout(attributed: provider(ch), width: contentWidth)
-        layouts[ch] = layout
-        let view = ChapterTextView(frame: .zero)
-        view.layout = layout
+
+        let view = ChapterTextView(
+            attributed: provider(ch),
+            width: contentWidth,
+            theme: currentTheme
+        )
+        view.onSpeakSelection = { [weak self] range in
+            guard let self else { return }
+            self.clearSelection()
+            self.onStartSpeech?(ch, range.location)
+        }
         addSubview(view)
         views[ch] = view
-        return layout
+        heights[ch] = view.frame.height
+        return view
     }
 
     /// 重新计算各章 y 坐标并摆放视图
@@ -507,10 +403,10 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         var y: CGFloat = 0
         var newTops: [Int: CGFloat] = [:]
         for ch in loadedRange {
-            guard let layout = layouts[ch] else { continue }
+            guard let height = heights[ch] else { continue }
             newTops[ch] = y
-            views[ch]?.frame = CGRect(x: horizontalInset, y: y, width: contentWidth, height: layout.height)
-            y += layout.height + chapterGap
+            views[ch]?.frame = CGRect(x: horizontalInset, y: y, width: contentWidth, height: height)
+            y += height + chapterGap
         }
         tops = newTops
         contentSize = CGSize(width: contentWidth + horizontalInset * 2, height: max(1, y))
@@ -530,9 +426,9 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
     private func prependPreviousIfNeeded() {
         guard let loadedRange, loadedRange.lowerBound > 0 else { return }
         let prev = loadedRange.lowerBound - 1
-        guard let layout = loadChapter(prev) else { return }
+        guard let height = heights[prev] ?? loadChapter(prev)?.frame.height else { return }
 
-        let shift = layout.height + chapterGap
+        let shift = height + chapterGap
         self.loadedRange = prev...loadedRange.upperBound
         relayoutPositions()
 
@@ -549,11 +445,11 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         let visibleTop = contentOffset.y + contentInset.top
         var lo = loadedRange.lowerBound
         while lo < loadedRange.upperBound {
-            guard let top = tops[lo], let layout = layouts[lo] else { break }
-            if top + layout.height + chapterGap < visibleTop - CGFloat(keepBehind) * 2000 {
+            guard let top = tops[lo], let height = heights[lo] else { break }
+            if top + height + chapterGap < visibleTop - CGFloat(keepBehind) * 2000 {
                 views[lo]?.removeFromSuperview()
                 views[lo] = nil
-                layouts[lo] = nil
+                heights[lo] = nil
                 lo += 1
             } else {
                 break
@@ -570,11 +466,11 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         let visibleBottom = contentOffset.y + bounds.height - contentInset.bottom
         var hi = loadedRange.upperBound
         while hi > loadedRange.lowerBound {
-            guard let top = tops[hi], layouts[hi] != nil else { break }
+            guard let top = tops[hi], heights[hi] != nil else { break }
             if top > visibleBottom + CGFloat(keepAhead) * 2000 {
                 views[hi]?.removeFromSuperview()
                 views[hi] = nil
-                layouts[hi] = nil
+                heights[hi] = nil
                 hi -= 1
             } else {
                 break
@@ -597,18 +493,18 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
             if let top = tops[ch], top <= y + 1 { best = ch } else { break }
         }
         let local = y - (tops[best] ?? 0)
-        let char = layouts[best]?.characterIndex(atY: max(0, local)) ?? 0
+        let char = views[best]?.characterIndex(atLocalPoint: CGPoint(x: 0, y: max(0, local))) ?? 0
         return (best, char)
     }
 
     private func applyPosition(chapter: Int, char: Int) {
-        guard let layout = layouts[chapter], let top = tops[chapter] else {
+        guard let view = views[chapter], let top = tops[chapter] else {
             // 目标章不在窗口内：重建
             rebuild(center: chapter, restoreChar: char)
             return
         }
         let visible = max(1, bounds.height - contentInset.top - contentInset.bottom)
-        let target = top + layout.topOffset(forCharacter: char)
+        let target = top + view.topOffset(forCharacter: char)
         let maxY = max(0, contentSize.height - visible)
         let y = min(max(0, target), maxY)
         isAdjusting = true
@@ -619,14 +515,14 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
 
     func scroll(toChapter chapter: Int, char: Int, animated: Bool) {
         guard chapter >= 0, chapter < chapterCount else { return }
-        if layouts[chapter] == nil || tops[chapter] == nil {
+        if views[chapter] == nil || tops[chapter] == nil {
             rebuild(center: chapter, restoreChar: char)
             return
         }
-        guard let layout = layouts[chapter], let top = tops[chapter] else { return }
+        guard let view = views[chapter], let top = tops[chapter] else { return }
         let visible = max(1, bounds.height - contentInset.top - contentInset.bottom)
         // 让目标行落在视口上方 18% 处，读起来更舒服
-        let target = top + layout.topOffset(forCharacter: char) - visible * 0.18
+        let target = top + view.topOffset(forCharacter: char) - visible * 0.18
         let maxY = max(0, contentSize.height - visible)
         let y = min(max(0, target), maxY)
         setContentOffset(CGPoint(x: 0, y: y - contentInset.top), animated: animated)
@@ -643,9 +539,13 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
 
     // MARK: UIScrollViewDelegate
 
+    /// 开始拖动就取消选中：选中状态下滚动会留下一个错位的高亮框
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        if hasSelection { clearSelection() }
+    }
+
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard !isAdjusting else { return }
-        if selection != nil { clearSelection() }
         report(force: false)
 
         let visibleBottom = contentOffset.y + bounds.height - contentInset.bottom
