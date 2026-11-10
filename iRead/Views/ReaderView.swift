@@ -191,9 +191,6 @@ struct ReaderView: View {
             .frame(width: geo.size.width, height: geo.size.height)
             // 仅供自测：模拟在屏幕某点长按选中
             .task {
-                if ProcessInfo.processInfo.arguments.contains("--panel") {
-                    showSettings = true
-                }
                 if let p = debugLongPressPoint {
                     try? await Task.sleep(nanoseconds: 900_000_000)
                     scrollProxy.selectSentence(at: p)

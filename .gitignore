@@ -18,3 +18,7 @@ xcuserdata/
 # 依赖缓存（如需重装见 README）
 .swiftpm/
 Pods/
+
+# 真机构建产物
+build-device/
+build-*/
