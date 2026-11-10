@@ -35,7 +35,7 @@
 - 阅读页顶部喇叭按钮或书架长按「听书」进入；**按段朗读并自动向下滚动**，跨章连续
 - **朗读高亮**：正在读的那一句在正文上淡色标出，自动跟随滚动，一眼看出读到哪
 - **从这儿读**：长按选中任意文字 → 系统编辑菜单最前面就是「从这里朗读」，点它从选中位置开始读；复制 / 查询 / 翻译等系统项照常可用。已去掉「点屏幕就开始朗读」：点击位置无法可靠对应到某一块文字，只有先选中才能确定要读哪句
-- **续读**：停止后再次开播，从上次停下的那一句（段落开头）继续，而不是当前屏开头
+- **续读**：朗读位置只由朗读本身推进 —— 停止后再次开播，从上一次读到的文字位置（段落开头）继续，**不看屏幕当前停在哪**。手动滑动浏览不会改变朗读位置；只有「从这里朗读」和跳章/书签会同步它。正在听的时候跳章，朗读跟着换到新位置
 - 沉浸模式下方有迷你听书条：播放 / 暂停 / 停止；锁屏与后台可继续播放（`UIBackgroundModes: audio`）
 - 语速可调（x0.7 – x1.5），中断处理：来电自动暂停、拔耳机自动暂停
 
@@ -91,6 +91,21 @@ iOS 包必须选 `ios-shared-onnxruntime-static` 这一款：`ios-static` 变体
 3. **iOS 没有任何中文男声**。实测 `AVSpeechSynthesisVoice.speechVoices()` 里中文只有
    `zh-CN Tingting`、`zh-TW Meijia`、`yue-HK Sinji`，全是女声。
    所以「男声」必须靠内置模型，不能指望系统语音。
+
+### 排版的坑（TextKit 1 单章 `UITextView`）
+
+1. **`attributedText` 赋值会把 `textContainer.size` 按 `bounds` 重置**。视图还是 `.zero` 时容器高度变 0，
+   只排出十几行，`usedRect` 只有真实高度的 1/3，整章后半段被裁掉（朗读高亮还会落在没渲染的字上，
+   看起来就像「读的内容和屏幕对不上」）。所以赋值后要**重钉容器尺寸**再 `ensureLayout`：
+   ```swift
+   attributedText = attributed
+   layoutManager.allowsNonContiguousLayout = false
+   textContainer.size = CGSize(width: width, height: 100_000)
+   layoutManager.ensureLayout(for: textContainer)
+   ```
+   实测 731 字的章：修复前 `usedRect` 688pt（17 行），修复后 2301pt（55 行），与 `sizeThatFits` 一致。
+2. **`widthTracksTextView` / `heightTracksTextView` 必须关**，否则 `sizeThatFits` 会把高度截断。
+3. **`isScrollEnabled = false` + 自己算高度** 是单章整块渲染的正确组合；不要指望 `intrinsicContentSize`。
 
 ## 构建与运行
 
