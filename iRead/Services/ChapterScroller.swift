@@ -184,6 +184,8 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
 
     /// 当前主题
     private var currentTheme: ReadingTheme = .paper
+    /// 是否跟随朗读自动滚动。用户手动滚一下就把控制权交还给他。
+    private(set) var isFollowingSpeech = true
     /// 当前朗读高亮（重建窗口后要补画回去）
     private var highlight: (chapter: Int, range: NSRange?, color: UIColor) = (0, nil, .clear)
 
@@ -285,17 +287,51 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
     }
 
     /// 让某个字符所在行保持可见（朗读跟随用）
+    ///
+    /// 用户一旦手动滚动就交还控制权：不再自动拽回朗读位置，
+    /// 只有等他滚回朗读行附近才自动恢复跟随。
     func ensureVisible(chapter: Int, char: Int, animated: Bool = true) {
         guard let view = views[chapter], let top = tops[chapter] else { return }
         let y = top + view.topOffset(forCharacter: char)
         let visibleTop = contentOffset.y + contentInset.top
         let visibleBottom = contentOffset.y + bounds.height - contentInset.bottom
+
+        if !isFollowingSpeech {
+            if y >= visibleTop, y <= visibleBottom - 40 {
+                isFollowingSpeech = true
+            }
+            return
+        }
+
         let upper = visibleBottom - 90
         guard y < visibleTop + 20 || y > upper else { return }
         let maxY = max(0, contentSize.height - (bounds.height - contentInset.top - contentInset.bottom))
         let target = min(max(0, y - 60), maxY)
         setContentOffset(CGPoint(x: 0, y: target - contentInset.top), animated: animated)
     }
+
+    /// 听书换段时把视口带到朗读位置。用户正在别处看时什么都不做。
+    func follow(chapter: Int, char: Int) {
+        guard isFollowingSpeech else { return }
+        if views[chapter] != nil, tops[chapter] != nil {
+            ensureVisible(chapter: chapter, char: char, animated: true)
+        } else {
+            scroll(toChapter: chapter, char: char, animated: false)
+        }
+    }
+
+    /// 用户主动开播 / 重新点「从这儿读」时恢复跟随
+    func resumeFollowing() {
+        isFollowingSpeech = true
+    }
+
+    #if DEBUG
+    /// 自测：模拟用户手动滚开（会像真拖动一样交出跟随控制权）
+    func simulateUserScroll(by dy: CGFloat) {
+        isFollowingSpeech = false
+        setContentOffset(CGPoint(x: 0, y: contentOffset.y + dy), animated: false)
+    }
+    #endif
 
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -539,8 +575,10 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
 
     // MARK: UIScrollViewDelegate
 
-    /// 开始拖动就取消选中：选中状态下滚动会留下一个错位的高亮框
+    /// 开始拖动就取消选中：选中状态下滚动会留下一个错位的高亮框。
+    /// 同时把「跟随朗读」的控制权交还用户 —— 否则读下一句时会把页面拽回去。
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        isFollowingSpeech = false
         if hasSelection { clearSelection() }
     }
 
@@ -591,6 +629,19 @@ final class ScrollProxy: ObservableObject {
         container?.ensureVisible(chapter: chapter, char: char)
     }
 
+    /// 听书换段：把视口带到朗读位置（用户手动滚开后自动跳过）
+    func follow(chapter: Int, char: Int) {
+        container?.follow(chapter: chapter, char: char)
+    }
+
+    /// 是否仍在跟随朗读
+    var isFollowingSpeech: Bool { container?.isFollowingSpeech ?? true }
+
+    /// 用户主动开播时恢复跟随
+    func resumeFollowing() {
+        container?.resumeFollowing()
+    }
+
     /// 命中测试（视图坐标），供调试注入/外部手势复用
     func characterIndex(near point: CGPoint) -> (chapter: Int, char: Int)? {
         container?.characterIndex(near: point)
@@ -600,6 +651,13 @@ final class ScrollProxy: ObservableObject {
     func selectSentence(at point: CGPoint) {
         container?.selectSentence(at: point)
     }
+
+    #if DEBUG
+    /// 自测：模拟手动滚开
+    func simulateUserScroll(by dy: CGFloat) {
+        container?.simulateUserScroll(by: dy)
+    }
+    #endif
 }
 
 // MARK: - SwiftUI 包装

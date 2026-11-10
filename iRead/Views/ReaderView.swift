@@ -42,6 +42,21 @@ struct ReaderView: View {
 
     private var theme: ReadingTheme { settings.theme }
 
+    /// 影响排版的设置指纹。只有这些变了才需要重排重画；
+    /// 亮度、语速、屏幕常亮之类的改动不该惊动正文。
+    private var layoutToken: String {
+        [
+            "\(settings.fontSize)",
+            "\(settings.lineSpacing)",
+            "\(settings.paragraphSpacing)",
+            "\(Int(settings.horizontalMargin))",
+            "\(Int(settings.verticalMargin))",
+            settings.isBold ? "b" : "-",
+            settings.firstLineIndent ? "i" : "-",
+            settings.theme.rawValue
+        ].joined(separator: "|")
+    }
+
     /// 仅供自测：`--longpress x,y` 注入一次长按
     private var debugLongPressPoint: CGPoint? {
         let args = ProcessInfo.processInfo.arguments
@@ -84,12 +99,17 @@ struct ReaderView: View {
         .onReceive(speech.$spokenRange) { range in
             applySpokenRange(range)
         }
-        .onReceive(settings.objectWillChange) { _ in
+        // 只有影响排版的设置变了才重排。亮度、语速、常亮这些不该触发重排，
+        // 更不该动朗读进度 —— 以前监听 objectWillChange 时会把 scrollSpeechOffset
+        // 覆盖成当前屏位置，结果就是「一调字号，朗读从眼前这段重读」。
+        .onChange(of: settings.keepScreenOn) { _, on in
+            UIApplication.shared.isIdleTimerDisabled = on
+        }
+        .onChange(of: layoutToken) { _, _ in
             if scrollProxy.hasRendered {
                 scrollProxy.refreshPosition()
                 scrollAnchorChapter = scrollProxy.chapter
                 scrollAnchorChar = scrollProxy.characterIndex
-                scrollSpeechOffset = scrollProxy.characterIndex
             }
             typesetter?.invalidate()
             refreshToken = UUID()
@@ -195,6 +215,19 @@ struct ReaderView: View {
                     try? await Task.sleep(nanoseconds: 900_000_000)
                     scrollProxy.selectSentence(at: p)
                 }
+                // 仅供自测：听书过程中模拟用户手动往下滚，验证不会再被拽回
+                if ProcessInfo.processInfo.arguments.contains("--scroll-away") {
+                    try? await Task.sleep(nanoseconds: 4_000_000_000)
+                    scrollProxy.simulateUserScroll(by: 600)
+                }
+                // 仅供自测：听书过程中改字号，验证不会重读
+                if ProcessInfo.processInfo.arguments.contains("--font-bump") {
+                    try? await Task.sleep(nanoseconds: 6_000_000_000)
+                    #if DEBUG
+                    print("[Reader] font-bump \(settings.fontSize) → \(settings.fontSize + 2)")
+                    #endif
+                    settings.fontSize += 2
+                }
             }
         }
         .background(theme.background.ignoresSafeArea())
@@ -249,9 +282,11 @@ struct ReaderView: View {
             onPositionChange: { ch, char in
                 scrollProxy.chapter = ch
                 scrollProxy.characterIndex = char
+                // 只更新「用户看到哪一章」，不要动朗读进度：
+                // 排版变化（改字号）会让这里报出不同的章号，
+                // 一旦把 scrollSpeechOffset 覆盖掉，下一段就会从你眼前的位置重读。
                 if ch != chapterIndex {
                     chapterIndex = ch
-                    scrollSpeechOffset = char
                 }
                 persistScrollProgress(chapter: ch, charIndex: char, throttled: true)
             },
@@ -408,9 +443,17 @@ struct ReaderView: View {
         if sameChapter, let r = resume {
             start = paragraphStart(chapter: chapterIndex, char: r.char)
         }
+        #if DEBUG
+        print("[Reader] startListening ch=\(chapterIndex) start=\(start) sameChapter=\(sameChapter) resume=\(String(describing: resume))")
+        #endif
         chapterIndex = min(max(0, chapterIndex), max(0, content.chapterCount - 1))
         scrollSpeechOffset = start
         speechChapter = chapterIndex
+        speechBase = start
+        scrollProxy.chapter = chapterIndex
+        scrollProxy.characterIndex = start
+        // 用户主动点开播，恢复自动跟随
+        scrollProxy.resumeFollowing()
         scrollProxy.scroll(toChapter: chapterIndex, char: start, animated: true)
         speakNextScrollChunk()
     }
@@ -447,22 +490,32 @@ struct ReaderView: View {
         scrollAnchorChar = start
         scrollProxy.chapter = chapter
         scrollProxy.characterIndex = start
+        // 用户明确指定了从这儿读，恢复自动跟随
+        scrollProxy.resumeFollowing()
         speakNextScrollChunk()   // 内部会滚到这一句并往后连续读
     }
 
-    /// 按段朗读，读完自动往下滚，跨章连续
+    /// 按段朗读，读完自动往下滚，跨章连续。
+    ///
+    /// 读哪一章以 `speechChapter` 为准，不能用 `chapterIndex` ——
+    /// 后者跟着视口走，用户一滑就会把朗读带到别的章去。
     private func speakNextScrollChunk() {
-        guard let content, content.chapters.indices.contains(chapterIndex) else { return }
-        let text = content.chapterText(at: chapterIndex)
+        guard let content, content.chapters.indices.contains(speechChapter) else { return }
+        let text = content.chapterText(at: speechChapter)
         if scrollSpeechOffset >= text.length {
-            if chapterIndex + 1 < content.chapterCount {
-                chapterIndex += 1
-                scrollAnchorChapter = chapterIndex
-                scrollAnchorChar = 0
+            if speechChapter + 1 < content.chapterCount {
+                speechChapter += 1
                 scrollSpeechOffset = 0
-                scrollProxy.chapter = chapterIndex
-                scrollProxy.characterIndex = 0
-                refreshToken = UUID()
+                speechBase = 0
+                // 只有在跟随时才把视口带到下一章；用户正在别处看就别动他的屏幕
+                if scrollProxy.isFollowingSpeech {
+                    chapterIndex = speechChapter
+                    scrollAnchorChapter = speechChapter
+                    scrollAnchorChar = 0
+                    scrollProxy.chapter = speechChapter
+                    scrollProxy.characterIndex = 0
+                    refreshToken = UUID()
+                }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in
                     guard speech.isActive else { return }
                     speakNextScrollChunk()
@@ -481,9 +534,11 @@ struct ReaderView: View {
             return
         }
         scrollSpeechOffset = next
-        speechChapter = chapterIndex
         speechBase = start
-        scrollProxy.scroll(toChapter: chapterIndex, char: start, animated: true)
+        scrollProxy.follow(chapter: speechChapter, char: start)
+        #if DEBUG
+        print("[Speech] chunk ch=\(speechChapter) start=\(start) next=\(next) following=\(scrollProxy.isFollowingSpeech)")
+        #endif
 
         speech.onAdvance = { [self] in speakNextScrollChunk() }
         speech.start(
