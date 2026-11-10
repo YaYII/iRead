@@ -10,10 +10,6 @@ import SwiftUI
 struct ReaderPanel: View {
     @EnvironmentObject var settings: ReaderSettings
 
-    /// 点「开始」启动自动阅读（由 ReaderView 接管定时器）
-    var onStartAutoRead: () -> Void = {}
-    /// 关闭面板
-    var onClose: () -> Void = {}
     /// 面板高度上限（由外层按屏幕高度算，展开态也不至于顶到状态栏）
     var maxHeight: CGFloat = 520
 
@@ -37,15 +33,10 @@ struct ReaderPanel: View {
                 divider
                 backgroundRow
                 divider
-                turnRow
-                divider
                 otherRow
 
                 if showAdvanced { advancedBlock }
                 if showMore { moreBlock }
-
-                divider
-                autoReadRow
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
@@ -241,39 +232,6 @@ struct ReaderPanel: View {
         .frame(height: 44)
     }
 
-    // MARK: - 翻页
-
-    private var turnRow: some View {
-        HStack(spacing: 10) {
-            Text("翻页")
-                .font(.system(size: 12))
-                .foregroundStyle(theme.secondary)
-                .frame(width: 30, alignment: .leading)
-
-            ForEach(PageTurnStyle.allCases) { style in
-                Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        settings.pageTurnStyle = style
-                    }
-                } label: {
-                    Text(style.name)
-                        .font(.system(size: 12, weight: settings.pageTurnStyle == style ? .semibold : .regular))
-                        .foregroundStyle(settings.pageTurnStyle == style ? theme.foreground : theme.secondary)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 30)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(settings.pageTurnStyle == style
-                                      ? theme.foreground.opacity(0.12)
-                                      : Color.clear)
-                        )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .frame(height: 44)
-    }
-
     // MARK: - 其他
 
     private var otherRow: some View {
@@ -400,39 +358,6 @@ struct ReaderPanel: View {
         }
         .padding(.vertical, 12)
         .transition(.opacity.combined(with: .move(edge: .top)))
-    }
-
-    // MARK: - 自动阅读
-
-    private var autoReadRow: some View {
-        HStack(spacing: 10) {
-            Text("自动阅读")
-                .font(.system(size: 12))
-                .foregroundStyle(theme.secondary)
-                .frame(width: 52, alignment: .leading)
-            Slider(value: $settings.autoReadSpeed, in: 5...30, step: 1)
-                .tint(theme.accent)
-            Text("\(Int(settings.autoReadSpeed))s")
-                .font(.system(size: 11, weight: .medium).monospacedDigit())
-                .foregroundStyle(theme.secondary)
-                .frame(width: 26, alignment: .trailing)
-            Button {
-                onStartAutoRead()
-            } label: {
-                HStack(spacing: 3) {
-                    Text("开始")
-                        .font(.system(size: 12, weight: .medium))
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 9))
-                }
-                .foregroundStyle(theme.background)
-                .padding(.horizontal, 12)
-                .frame(height: 30)
-                .background(Capsule().fill(theme.accent))
-            }
-            .buttonStyle(.plain)
-        }
-        .frame(height: 48)
     }
 
     private var theme: ReadingTheme { settings.theme }

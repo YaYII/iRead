@@ -5,7 +5,7 @@ import CoreText
 // MARK: - 整章排版结果
 
 /// 把整章文本在固定宽度下排成「一整条」，不做分页。
-/// 与 Paginator 共用同一份带属性字符串，所以字形、行距、首行缩进完全一致。
+/// 与 ChapterTextProvider 共用同一份带属性字符串，所以字形、行距、首行缩进完全一致。
 final class ChapterLayout {
     let attributed: NSAttributedString
     let width: CGFloat
@@ -266,8 +266,8 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
 
     var onPositionChange: ((Int, Int) -> Void)?
     var onTap: (() -> Void)?
-    /// 双击正文：回调（章号，章内字符位置），用于「从这里开始朗读」
-    var onDoubleTap: ((Int, Int) -> Void)?
+    /// 气泡 ▶：回调（章号，选中句在章内的起点）
+    var onStartSpeech: ((Int, Int) -> Void)?
 
     /// 当前主题，供选中气泡取色
     private var currentTheme: ReadingTheme = .paper
@@ -277,8 +277,10 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         let view = SelectionBubble()
         view.onPlay = { [weak self] in
             guard let self, let selection = self.selection else { return }
+            let chapter = selection.chapter
+            let char = selection.range.location
             self.clearSelection()
-            self.onDoubleTap?(selection.chapter, selection.range.location)
+            self.onStartSpeech?(chapter, char)
         }
         view.onCopy = { [weak self] in
             guard let self, let selection = self.selection,
@@ -303,17 +305,20 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         tap.cancelsTouchesInView = false
         addGestureRecognizer(tap)
 
-        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
+        // 双击不再承担任何功能（不再「点屏幕就开始朗读」），
+        // 留着识别器只为让单击失败，避免双击把工具栏闪两下。
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(ignoreDoubleTap))
         doubleTap.numberOfTapsRequired = 2
         doubleTap.cancelsTouchesInView = false
         addGestureRecognizer(doubleTap)
-        // 双击优先：单击要等双击失败才触发，避免双击时工具栏闪两下
         tap.require(toFail: doubleTap)
 
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
         longPress.minimumPressDuration = 0.35
         longPress.cancelsTouchesInView = false
         addGestureRecognizer(longPress)
+        // 长按选完字不要顺带把工具栏切一下
+        tap.require(toFail: longPress)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -323,11 +328,8 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         onTap?()
     }
 
-    @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
-        clearSelection()
-        guard let hit = characterIndex(near: gesture.location(in: self)) else { return }
-        onDoubleTap?(hit.chapter, hit.char)
-    }
+    /// 双击不再触发朗读；识别器只用来让上面的单击失败
+    @objc private func ignoreDoubleTap() {}
 
     /// 长按：选中手指下这一句，弹出「从这里读 / 复制」
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
@@ -568,7 +570,7 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         let visibleBottom = contentOffset.y + bounds.height - contentInset.bottom
         var hi = loadedRange.upperBound
         while hi > loadedRange.lowerBound {
-            guard let top = tops[hi], let layout = layouts[hi] else { break }
+            guard let top = tops[hi], layouts[hi] != nil else { break }
             if top > visibleBottom + CGFloat(keepAhead) * 2000 {
                 views[hi]?.removeFromSuperview()
                 views[hi] = nil
@@ -631,22 +633,6 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         report(force: true)
     }
 
-    /// 相对当前位置向下滚动 `distance` 点。
-    /// - Returns: false 表示已经到内容末尾（自动阅读据此停止）
-    @discardableResult
-    func scrollBy(_ distance: CGFloat, animated: Bool) -> Bool {
-        let visible = max(1, bounds.height - contentInset.top - contentInset.bottom)
-        let maxY = max(0, contentSize.height - visible)
-        let current = contentOffset.y + contentInset.top
-        let target = current + distance
-        if target >= maxY - 0.5 {
-            setContentOffset(CGPoint(x: 0, y: maxY - contentInset.top), animated: animated)
-            return false
-        }
-        setContentOffset(CGPoint(x: 0, y: target - contentInset.top), animated: animated)
-        return true
-    }
-
     private func report(force: Bool) {
         let pos = position
         if !force && pos.chapter == reportedChapter && abs(pos.char - reportedChar) < 6 { return }
@@ -686,19 +672,11 @@ final class ScrollProxy: ObservableObject {
     var characterIndex: Int = 0
     /// 最近一次保存时间（用于节流）
     var lastSaveAt: Date = .distantPast
-    /// 最近一次用于保存的分页数量
-    var lastPageCount: Int = 1
 
     var hasRendered: Bool { container != nil }
 
     func scroll(toChapter chapter: Int, char: Int, animated: Bool = true) {
         container?.scroll(toChapter: chapter, char: char, animated: animated)
-    }
-
-    /// 相对滚动一屏；返回 false 表示已经到全书末尾
-    @discardableResult
-    func scrollBy(_ distance: CGFloat, animated: Bool = true) -> Bool {
-        container?.scrollBy(distance, animated: animated) ?? false
     }
 
     func refreshPosition() {
@@ -746,13 +724,13 @@ struct BookScrollView: UIViewRepresentable {
 
     var onPositionChange: (Int, Int) -> Void
     var onTap: () -> Void
-    var onDoubleTap: (Int, Int) -> Void
+    var onStartSpeech: (Int, Int) -> Void
 
     func makeUIView(context: Context) -> BookScrollContainer {
         let view = BookScrollContainer()
         view.onPositionChange = onPositionChange
         view.onTap = onTap
-        view.onDoubleTap = onDoubleTap
+        view.onStartSpeech = onStartSpeech
         proxy.container = view
         return view
     }
@@ -760,7 +738,7 @@ struct BookScrollView: UIViewRepresentable {
     func updateUIView(_ view: BookScrollContainer, context: Context) {
         view.onPositionChange = onPositionChange
         view.onTap = onTap
-        view.onDoubleTap = onDoubleTap
+        view.onStartSpeech = onStartSpeech
         proxy.container = view
         view.configure(
             chapterCount: chapterCount,

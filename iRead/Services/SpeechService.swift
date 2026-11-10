@@ -143,7 +143,7 @@ final class SpeechService: NSObject, ObservableObject {
 
     // MARK: - 播放控制
 
-    /// 朗读一段文本。已处于听书模式时再次调用会替换当前内容（用于翻页/换段/改语速）。
+    /// 朗读一段文本。已处于听书模式时再次调用会替换当前内容（用于换段/改语速）。
     func start(text: String, rate: Double, profile: VoiceProfile) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         activateAudioSession()
@@ -225,7 +225,7 @@ final class SpeechService: NSObject, ObservableObject {
         onAdvance = nil
     }
 
-    /// 立即静音并作废在途合成，但不改变 isActive（供换段/翻页复用）
+    /// 立即静音并作废在途合成，但不改变 isActive（供换段复用）
     private func haltPlayback() {
         runToken &+= 1
         producerFinished = true

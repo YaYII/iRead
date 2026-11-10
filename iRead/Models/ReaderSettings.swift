@@ -13,19 +13,16 @@ final class ReaderSettings: ObservableObject {
         static let horizontalMargin = "iRead.setting.horizontalMargin"
         static let verticalMargin = "iRead.setting.verticalMargin"
         static let theme = "iRead.setting.theme"
-        static let pageTurnStyle = "iRead.setting.pageTurnStyle"
         static let isBold = "iRead.setting.isBold"
         static let firstLineIndent = "iRead.setting.firstLineIndent"
         static let keepScreenOn = "iRead.setting.keepScreenOn"
         static let brightness = "iRead.setting.brightness"
         static let speechRate = "iRead.setting.speechRate"
         static let speechVoiceID = "iRead.setting.speechVoiceID"
-        static let readingMode = "iRead.setting.readingMode"
         static let speechEngine = "iRead.setting.speechEngine"
         static let voiceProfile = "iRead.setting.voiceProfile"
         static let textTint = "iRead.setting.textTint"
         static let eyeCare = "iRead.setting.eyeCare"
-        static let autoReadSpeed = "iRead.setting.autoReadSpeed"
     }
 
     @Published var fontSize: CGFloat { didSet { store(Double(fontSize), Key.fontSize) } }
@@ -34,15 +31,6 @@ final class ReaderSettings: ObservableObject {
     @Published var horizontalMargin: CGFloat { didSet { store(Double(horizontalMargin), Key.horizontalMargin) } }
     @Published var verticalMargin: CGFloat { didSet { store(Double(verticalMargin), Key.verticalMargin) } }
     @Published var theme: ReadingTheme { didSet { defaults.set(theme.rawValue, forKey: Key.theme) } }
-    /// 翻页方式（含「上下」这一档），是阅读方式与动效的唯一真相
-    @Published var pageTurnStyle: PageTurnStyle {
-        didSet {
-            defaults.set(pageTurnStyle.rawValue, forKey: Key.pageTurnStyle)
-            // 由翻页方式反推阅读方式，避免两处状态打架
-            let mode = pageTurnStyle.readingMode
-            if readingMode != mode { readingMode = mode }
-        }
-    }
     @Published var isBold: Bool { didSet { defaults.set(isBold, forKey: Key.isBold) } }
     @Published var firstLineIndent: Bool { didSet { defaults.set(firstLineIndent, forKey: Key.firstLineIndent) } }
     @Published var keepScreenOn: Bool { didSet { defaults.set(keepScreenOn, forKey: Key.keepScreenOn) } }
@@ -59,21 +47,6 @@ final class ReaderSettings: ObservableObject {
     /// 听书音色标识，空串表示系统默认中文音色
     @Published var speechVoiceID: String {
         didSet { defaults.set(speechVoiceID, forKey: Key.speechVoiceID) }
-    }
-    /// 阅读方式：上下滑动 / 左右翻页。由 `pageTurnStyle` 驱动，一般不直接改。
-    @Published var readingMode: ReadingMode {
-        didSet {
-            defaults.set(readingMode.rawValue, forKey: Key.readingMode)
-            // 反向同步：外部只改阅读方式时（如工具栏切换、调试参数），翻页方式跟着走
-            guard !isSyncing else { return }
-            isSyncing = true
-            defer { isSyncing = false }
-            if readingMode == .scroll {
-                if pageTurnStyle != .scroll { pageTurnStyle = .scroll }
-            } else if pageTurnStyle == .scroll {
-                pageTurnStyle = .slide
-            }
-        }
     }
     /// 听书引擎：内置 Piper 神经语音 / 系统语音
     @Published var speechEngine: SpeechEngineKind {
@@ -95,13 +68,6 @@ final class ReaderSettings: ObservableObject {
     @Published var eyeCare: Bool {
         didSet { defaults.set(eyeCare, forKey: Key.eyeCare) }
     }
-    /// 自动阅读速度：每页停留秒数
-    @Published var autoReadSpeed: Double {
-        didSet { defaults.set(autoReadSpeed, forKey: Key.autoReadSpeed) }
-    }
-
-    /// 防止 pageTurnStyle / readingMode 互相触发死循环
-    private var isSyncing = false
 
     /// 实际用于正文的色值（主题前景色被 textTint 覆盖）
     var effectiveForeground: Color { Color(hex: effectiveForegroundHex) }
@@ -123,9 +89,6 @@ final class ReaderSettings: ObservableObject {
         horizontalMargin = Self.cg(Key.horizontalMargin, 24)
         verticalMargin = Self.cg(Key.verticalMargin, 30)
         theme = ReadingTheme(rawValue: d.string(forKey: Key.theme) ?? "") ?? .paper
-        let storedMode = ReadingMode(rawValue: d.string(forKey: Key.readingMode) ?? "") ?? .scroll
-        readingMode = storedMode
-        pageTurnStyle = PageTurnStyle.fromStored(d.string(forKey: Key.pageTurnStyle) ?? "", mode: storedMode)
         isBold = d.object(forKey: Key.isBold) as? Bool ?? false
         firstLineIndent = d.object(forKey: Key.firstLineIndent) as? Bool ?? true
         keepScreenOn = d.object(forKey: Key.keepScreenOn) as? Bool ?? true
@@ -136,7 +99,6 @@ final class ReaderSettings: ObservableObject {
         speechEngine = engine
         textTint = TextTint(rawValue: d.string(forKey: Key.textTint) ?? "") ?? .auto
         eyeCare = d.object(forKey: Key.eyeCare) as? Bool ?? false
-        autoReadSpeed = d.object(forKey: Key.autoReadSpeed) as? Double ?? 12
         // 旧版本只存了引擎；没有档位记录时按引擎推断，避免升级后听感突变
         if let raw = d.string(forKey: Key.voiceProfile), let saved = VoiceProfile.fromStored(raw) {
             voiceProfile = saved
@@ -165,8 +127,6 @@ final class ReaderSettings: ObservableObject {
         horizontalMargin = 24
         verticalMargin = 30
         theme = .paper
-        // 直接设翻页方式，readingMode 会由它自动同步
-        pageTurnStyle = .scroll
         isBold = false
         firstLineIndent = true
         keepScreenOn = true
@@ -177,7 +137,6 @@ final class ReaderSettings: ObservableObject {
         voiceProfile = .neuralFemale
         textTint = .auto
         eyeCare = false
-        autoReadSpeed = 12
         applyBrightness()
     }
 }

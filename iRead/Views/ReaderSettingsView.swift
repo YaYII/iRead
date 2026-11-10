@@ -39,7 +39,6 @@ struct ReaderSettingsView: View {
             fontCard
             spacingCard
             themeCard
-            turnCard
             brightnessCard
             speechCard.id("speech")
             resetRow
@@ -114,41 +113,6 @@ struct ReaderSettingsView: View {
                                     settings.theme == t ? theme.accent : t.secondary.opacity(0.35),
                                     lineWidth: settings.theme == t ? 2 : 0.5
                                 )
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-    }
-
-    // MARK: - 翻页（含上下滚动）
-
-    private var turnCard: some View {
-        card("book.pages") {
-            HStack(spacing: 6) {
-                ForEach(PageTurnStyle.allCases) { style in
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            settings.pageTurnStyle = style
-                        }
-                    } label: {
-                        VStack(spacing: 3) {
-                            Image(systemName: style.icon)
-                                .font(.system(size: 16))
-                            Text(style.name)
-                                .font(.system(size: 9))
-                        }
-                        .foregroundStyle(
-                            settings.pageTurnStyle == style ? theme.foreground : theme.secondary
-                        )
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 46)
-                        .background(
-                            RoundedRectangle(cornerRadius: 9)
-                                .fill(settings.pageTurnStyle == style
-                                      ? theme.foreground.opacity(0.12)
-                                      : Color.clear)
                         )
                     }
                     .buttonStyle(.plain)

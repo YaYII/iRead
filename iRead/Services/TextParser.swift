@@ -2,7 +2,7 @@ import Foundation
 import CoreFoundation
 
 struct ParsedBook {
-    /// 规范化后的 UTF-8 文本（NSString 便于用 UTF-16 偏移做 CoreText 分页）
+    /// 规范化后的 UTF-8 文本（NSString 便于用 UTF-16 偏移做 CoreText 排版）
     let text: NSString
     let chapters: [Chapter]
 }

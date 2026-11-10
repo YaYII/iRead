@@ -66,8 +66,11 @@ final class LibraryStore: ObservableObject {
     func bookmarks(for bookID: String) -> [Bookmark] {
         bookmarks.filter { $0.bookID == bookID }.sorted { $0.createdAt > $1.createdAt }
     }
-    func isBookmarked(bookID: String, chapterIndex: Int, pageIndex: Int) -> Bool {
-        bookmarks.contains { $0.bookID == bookID && $0.chapterIndex == chapterIndex && $0.pageIndex == pageIndex }
+    func isBookmarked(bookID: String, chapterIndex: Int, charOffset: Int) -> Bool {
+        bookmarks.contains {
+            $0.bookID == bookID && $0.chapterIndex == chapterIndex
+                && abs(($0.charOffset ?? -10_000) - charOffset) <= 40
+        }
     }
 
     // MARK: - 导入 / 删除
@@ -99,7 +102,6 @@ final class LibraryStore: ObservableObject {
             chapterCount: parsed.chapters.count,
             fileSize: Int64(body.count),
             lastChapterIndex: 0,
-            lastPageIndex: 0,
             progress: 0,
             coverHue: Double(books.count % 8) / 8.0 + 0.04,
             isPinned: false,
@@ -139,23 +141,21 @@ final class LibraryStore: ObservableObject {
     func updateReading(
         bookID: String,
         chapterIndex: Int,
-        pageIndex: Int,
         progress: Double,
         scrollRatio: Double? = nil
     ) {
         mutate(bookID) {
             $0.lastChapterIndex = chapterIndex
-            $0.lastPageIndex = pageIndex
             $0.progress = min(1, max(0, progress))
             $0.lastReadAt = Date()
-            // 只在上下滑动模式记录章内滚动位置；翻页模式下清空，避免换模式后跳位
             $0.lastScrollRatio = scrollRatio.map { min(1, max(0, $0)) }
         }
     }
 
-    func toggleBookmark(bookID: String, chapterIndex: Int, pageIndex: Int, excerpt: String) {
+    func toggleBookmark(bookID: String, chapterIndex: Int, charOffset: Int, excerpt: String) {
         if let existing = bookmarks.first(where: {
-            $0.bookID == bookID && $0.chapterIndex == chapterIndex && $0.pageIndex == pageIndex
+            $0.bookID == bookID && $0.chapterIndex == chapterIndex
+                && abs(($0.charOffset ?? -10_000) - charOffset) <= 40
         }) {
             removeBookmark(existing)
             return
@@ -165,7 +165,7 @@ final class LibraryStore: ObservableObject {
             id: UUID().uuidString,
             bookID: bookID,
             chapterIndex: chapterIndex,
-            pageIndex: pageIndex,
+            charOffset: charOffset,
             excerpt: String(excerpt.prefix(60)),
             createdAt: Date()
         ))
@@ -180,7 +180,7 @@ final class LibraryStore: ObservableObject {
         save()
     }
 
-    /// 设置变更后清掉分页缓存
+    /// 设置变更后清掉正文缓存
     func invalidateContentCache() { cache.removeAll() }
 
     // MARK: - 听书续读位置
@@ -258,7 +258,6 @@ final class LibraryStore: ObservableObject {
                 chapterCount: parsed.chapters.count,
                 fileSize: Int64(data.count),
                 lastChapterIndex: 0,
-                lastPageIndex: 0,
                 progress: 0,
                 coverHue: [0.06, 0.52, 0.32, 0.78][i % 4],
                 isPinned: i == 0,

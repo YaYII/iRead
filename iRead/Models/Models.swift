@@ -49,8 +49,7 @@ struct Book: Identifiable, Codable, Hashable {
     var chapterCount: Int
     var fileSize: Int64
     var lastChapterIndex: Int
-    var lastPageIndex: Int
-    /// 上下滑动模式下的章内位置（0...1），nil 表示按 lastPageIndex 估算
+    /// 章内位置（0...1），恢复阅读位置用
     var lastScrollRatio: Double? = nil
     /// 0...1
     var progress: Double
@@ -72,7 +71,8 @@ struct Bookmark: Identifiable, Codable, Hashable {
     var id: String
     var bookID: String
     var chapterIndex: Int
-    var pageIndex: Int
+    /// 章内字符位置。旧版本按「页」记录，没有这个字段，回落到章首。
+    var charOffset: Int? = nil
     var excerpt: String
     var createdAt: Date
 }
@@ -148,63 +148,6 @@ enum ReadingTheme: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-// MARK: - 翻页动效
-
-/// 阅读方式 + 翻页动效合并成一条「翻页」选择，和番茄/起点等主流阅读器一致。
-///
-/// `.scroll` 是上下连续滚动（不是翻页，但放在同一组里更符合直觉：
-/// 用户只关心「书怎么往下走」，不关心内部实现是滚动还是分页）。
-enum PageTurnStyle: String, CaseIterable, Identifiable, Codable {
-    case curl
-    case cover
-    case slide
-    case scroll
-    case none
-
-    var id: String { rawValue }
-
-    var name: String {
-        switch self {
-        case .curl: return "仿真"
-        case .cover: return "覆盖"
-        case .slide: return "平移"
-        case .scroll: return "上下"
-        case .none: return "无动画"
-        }
-    }
-
-    var detail: String {
-        switch self {
-        case .curl: return "页面像纸一样翻折过去"
-        case .cover: return "新页从右侧盖住旧页"
-        case .slide: return "两页一起平移"
-        case .scroll: return "网页式连续滚动，跨章无缝"
-        case .none: return "直接切换，不带动效"
-        }
-    }
-
-    /// 该档位对应的阅读方式
-    var readingMode: ReadingMode { self == .scroll ? .scroll : .page }
-
-    /// 设置页用的图标（一屏五个图标，比五个词更快扫）
-    var icon: String {
-        switch self {
-        case .curl: return "book.closed"
-        case .cover: return "rectangle.on.rectangle"
-        case .slide: return "arrow.left.and.right"
-        case .scroll: return "arrow.up.and.down"
-        case .none: return "rectangle.dashed"
-        }
-    }
-
-    /// 兼容旧版本存储值（旧版把阅读方式和动效分开存，且有一个 .fade）
-    static func fromStored(_ raw: String, mode: ReadingMode) -> PageTurnStyle {
-        if let v = PageTurnStyle(rawValue: raw) { return v }
-        if raw == "fade" { return .none }
-        return mode == .scroll ? .scroll : .slide
-    }
-}
-
 // MARK: - 文字颜色
 
 /// 正文文字颜色。叠加在主题背景之上，`auto` 表示跟随主题自带的配色。
@@ -247,37 +190,6 @@ enum TextTint: String, CaseIterable, Identifiable, Codable {
         case .slate: return 0x3A4652
         case .cream: return 0xEDE6D8
         case .gray: return 0x8C8C8C
-        }
-    }
-}
-
-// MARK: - 阅读方式
-
-/// 上下滑动（网页式连续阅读）或左右翻页。
-enum ReadingMode: String, CaseIterable, Identifiable, Codable {
-    case scroll
-    case page
-
-    var id: String { rawValue }
-
-    var name: String {
-        switch self {
-        case .scroll: return "上下滑动"
-        case .page: return "左右翻页"
-        }
-    }
-
-    var detail: String {
-        switch self {
-        case .scroll: return "像网页一样连续滚动，最接近现在的阅读习惯"
-        case .page: return "整页翻动，一屏一屏地读"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .scroll: return "arrow.up.and.down.text.horizontal"
-        case .page: return "book.pages"
         }
     }
 }

@@ -1,6 +1,6 @@
 import Foundation
 
-/// 一本书在内存中的正文 + 目录，供分页引擎使用。
+/// 一本书在内存中的正文 + 目录，供排版引擎使用。
 final class BookContent {
     let text: NSString
     let chapters: [Chapter]

@@ -72,7 +72,7 @@ struct BookmarksView: View {
 
     private func bookmarkRow(_ bookmark: Bookmark) -> some View {
         Button {
-            onJump(bookmark.chapterIndex, bookmark.pageIndex)
+            onJump(bookmark.chapterIndex, bookmark.charOffset ?? 0)
             dismiss()
         } label: {
             VStack(alignment: .leading, spacing: 10) {
@@ -85,7 +85,6 @@ struct BookmarksView: View {
 
                 HStack(spacing: 14) {
                     Label("第 \(bookmark.chapterIndex + 1) 章", systemImage: "book.closed")
-                    Label("第 \(bookmark.pageIndex + 1) 页", systemImage: "doc.text")
                     Spacer(minLength: 4)
                     Text(shortDate(bookmark.createdAt))
                 }
@@ -118,7 +117,7 @@ struct BookmarksView: View {
             Text("还没有书签")
                 .font(.headline)
                 .foregroundStyle(theme.foreground)
-            Text("阅读时点击书签按钮，即可在这里快速回到那一页")
+            Text("阅读时点击书签按钮，即可在这里快速回到那个位置")
                 .font(.subheadline)
                 .foregroundStyle(theme.secondary)
                 .multilineTextAlignment(.center)
