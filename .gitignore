@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+dist/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# 本工具链的临时产物
+.workbuddy/
+
+# 依赖缓存（如需重装见 README）
+.swiftpm/
+Pods/
