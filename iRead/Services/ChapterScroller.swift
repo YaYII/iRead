@@ -333,6 +333,11 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         isFollowingSpeech = true
     }
 
+    /// 用户主动回到原阅读进度时交出跟随控制权，别把人又拽回朗读位置
+    func pauseFollowing() {
+        isFollowingSpeech = false
+    }
+
     #if DEBUG
     /// 自测：模拟用户手动滚开（会像真拖动一样交出跟随控制权）
     func simulateUserScroll(by dy: CGFloat) {
@@ -648,6 +653,11 @@ final class ScrollProxy: ObservableObject {
     /// 用户主动开播时恢复跟随
     func resumeFollowing() {
         container?.resumeFollowing()
+    }
+
+    /// 回到原阅读进度：停止自动跟随
+    func pauseFollowing() {
+        container?.pauseFollowing()
     }
 
     /// 命中测试（视图坐标），供调试注入/外部手势复用

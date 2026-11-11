@@ -33,6 +33,12 @@ struct ReaderView: View {
     /// 正在朗读的区间（章内坐标），仅在「听的就是这本书」时有值
     @State private var speechHighlight: NSRange?
 
+    /// 是否处于跟读：由听书中心的持久状态决定，视图被 SwiftUI 重建也不会丢。
+    /// 只有「听的就是这本书」时才跟读，听 A 看 B 不会把 B 的页面抢走。
+    private var followMode: Bool {
+        listening.isFollowAlong && listening.bookID == bookID
+    }
+
     private var theme: ReadingTheme { settings.theme }
 
     /// 影响排版的设置指纹。只有这些变了才需要重排重画；
@@ -188,17 +194,24 @@ struct ReaderView: View {
                     .zIndex(4)
                 }
 
-                // 听书悬浮组件：常驻「听」球 + 正在听时的控制胶囊。
-                // 不随沉浸模式消失，也不判断听的是不是这本书 —— 听 A 看 B 时照样能控制。
-                // 它浮在正文上，跟 UITextView / 滚动容器没有任何耦合。
+                // 跟读模式下换成番茄式「原进度 / 从本页听」条，
+                // 其余时候是「听」球 / 播放胶囊（两者互斥）。
                 if !showSettings {
-                    ListeningFloatingDock(
-                        onOpen: openPlayer,
-                        bottomInset: showChrome ? 78 : 24
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .zIndex(3)
+                    if followMode {
+                        followBar
+                            .padding(.bottom, showChrome ? 78 : 24)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                            .zIndex(3)
+                    } else {
+                        ListeningFloatingDock(
+                            onOpen: openPlayer,
+                            bottomInset: showChrome ? 78 : 24
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .zIndex(3)
+                    }
                 }
 
                 // 护眼滤镜：一层极淡的暖色，降低蓝光又不至于糊掉文字
@@ -379,6 +392,107 @@ struct ReaderView: View {
         listening.bookID == bookID && listening.isActive
     }
 
+    // MARK: - 边听边读：阅读页跟读
+
+    /// 跟读条：居中浮在正文上，与右下「听」球 / 播放胶囊互斥。
+    /// 「原进度」回进入跟读前的阅读位置；「从本页听」把朗读起点挪到当前这一页。
+    private var followBar: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            HStack(spacing: 0) {
+                Button {
+                    returnToOriginalProgress()
+                } label: {
+                    Label("原进度", systemImage: "arrow.uturn.backward")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("回到原阅读进度")
+
+                separator
+
+                Button {
+                    listenFromHere()
+                } label: {
+                    Label("从本页听", systemImage: "headphones")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("从当前页开始听")
+
+                separator
+
+                Button {
+                    listening.toggle()
+                } label: {
+                    Image(systemName: (listening.isIdle || listening.isPaused) ? "play.fill" : "pause.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("播放或暂停朗读")
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 13)
+            .padding(.vertical, 8)
+            .background(Capsule().fill(Color(white: 0.28).opacity(0.94)))
+            .shadow(color: .black.opacity(0.22), radius: 9, y: 3)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var separator: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.22))
+            .frame(width: 0.5, height: 16)
+            .padding(.horizontal, 10)
+    }
+
+    /// 从听书组件点「边听边读」进来：记住原阅读进度，落到朗读位置并恢复自动跟随。
+    /// 之后朗读每换一句，`syncListeningHighlight` 的 `ensureVisible` 会把视口带过去。
+    private func enterFollowMode() {
+        guard let content else { return }
+        // 只记第一次：sheet 收起过程中 SwiftUI 可能多次 prepare，别把原进度覆盖掉
+        ListeningCenter.shared.saveFollowOrigin(chapter: chapterIndex, char: scrollAnchorChar)
+        let ch = min(max(0, listening.spokenChapter), max(0, content.chapterCount - 1))
+        let length = content.chapterText(at: ch).length
+        let char = min(max(0, listening.currentChar), max(0, length - 1))
+        chapterIndex = ch
+        scrollAnchorChapter = ch
+        scrollAnchorChar = char
+        scrollProxy.chapter = ch
+        scrollProxy.characterIndex = char
+        scrollProxy.resumeFollowing()
+        refreshToken = UUID()
+        syncListeningHighlight()
+        #if DEBUG
+        print("[Reader] follow-along ch=\(ch) char=\(char) origin=\(listening.followOriginalChapter)/\(listening.followOriginalChar)")
+        #endif
+    }
+
+    /// 回原进度：退出跟读、交出跟随控制权。听书本身继续播，不受影响。
+    private func returnToOriginalProgress() {
+        let chapter = listening.followOriginalChapter
+        let char = listening.followOriginalChar
+        ListeningCenter.shared.endFollowAlong()
+        scrollProxy.pauseFollowing()
+        chapterIndex = chapter
+        scrollAnchorChapter = chapter
+        scrollAnchorChar = char
+        scrollProxy.chapter = chapter
+        scrollProxy.characterIndex = char
+        refreshToken = UUID()
+    }
+
+    /// 从当前这一页开始听：把听书游标挪到视口位置，再继续跟读
+    private func listenFromHere() {
+        let ch = max(0, scrollProxy.chapter)
+        let char = max(0, scrollProxy.characterIndex)
+        listening.seekTo(chapter: ch, char: char)
+        scrollProxy.resumeFollowing()
+        syncListeningHighlight()
+    }
+
     /// 所有听书入口（顶部耳机、右下悬浮球）都只打开听书界面，不在这里出声。
     /// 没有选中过书时，把当前这本装进听书组件作预选（依然不播）；
     /// 已经在听别的书时一律不打断，换书由播放器内部的「选书」完成。
@@ -539,5 +653,7 @@ struct ReaderView: View {
         // 仅供截图：直接弹出番茄式设置面板
         if args.contains("--panel") { showSettings = true }
         if args.contains("--eyecare") { settings.eyeCare = true }
+        // 从听书组件点「边听边读」进来：阅读页从朗读位置开始跟读
+        if followMode { enterFollowMode() }
     }
 }

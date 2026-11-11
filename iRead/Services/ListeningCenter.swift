@@ -46,6 +46,46 @@ final class ListeningCenter: ObservableObject {
     var isPlayingSomething: Bool { bookID != nil }
     /// 已经选好了书、但还没开始播：播放器和悬浮胶囊都显示「播放」，不显示「暂停」
     var isIdle: Bool { bookID != nil && !isActive }
+
+    // MARK: - 打开阅读页跟读
+
+    /// 听书组件请求打开某本书的阅读页（由 ContentView 消费）
+    @Published private(set) var readerRequest: String?
+
+    /// 阅读页是否处于「跟读」状态。
+    /// 这是**持久状态**而非一次性标志：sheet 收起 + fullScreenCover 重建时
+    /// SwiftUI 可能多次创建 ReaderView，一次性标志会被第一个实例吃掉。
+    @Published private(set) var isFollowAlong = false
+    /// 进入跟读前的阅读位置，供「原进度」一键回去
+    @Published private(set) var followOriginalChapter = 0
+    @Published private(set) var followOriginalChar = 0
+    private var followOriginSaved = false
+
+    /// 「边听边读」：关掉播放器，打开真正的阅读界面并跟随朗读
+    func requestFollowAlong(bookID id: String) {
+        isFollowAlong = true
+        followOriginSaved = false
+        readerRequest = id
+    }
+
+    func consumeReaderRequest() -> String? {
+        defer { readerRequest = nil }
+        return readerRequest
+    }
+
+    /// 只记第一次进入跟读时的阅读进度；视图重复 prepare 不覆盖
+    func saveFollowOrigin(chapter: Int, char: Int) {
+        guard !followOriginSaved else { return }
+        followOriginSaved = true
+        followOriginalChapter = chapter
+        followOriginalChar = char
+    }
+
+    /// 点「原进度」退出跟读
+    func endFollowAlong() {
+        isFollowAlong = false
+        followOriginSaved = false
+    }
     /// 本章剩余进度（播放器进度条用）
     var overallProgress: Double {
         guard chapterCount > 0 else { return 0 }
@@ -239,6 +279,7 @@ final class ListeningCenter: ObservableObject {
         currentChar = 0
         spokenRange = nil
         content = nil
+        endFollowAlong()
         updateNowPlaying()
     }
 
@@ -369,6 +410,7 @@ final class ListeningCenter: ObservableObject {
         currentChar = 0
         spokenRange = nil
         bookID = nil
+        endFollowAlong()
         updateNowPlaying()
     }
 

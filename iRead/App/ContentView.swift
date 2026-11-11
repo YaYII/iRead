@@ -93,6 +93,45 @@ struct ContentView: View {
             } else if args.contains("--debug-settings") {
                 selection = 1
             }
+            // 仅供自测：模拟「打开播放器 → 点边听边读」的真实时序
+            if args.contains("--debug-player-follow") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    guard let book = store.books.first else { return }
+                    listening.resume(bookID: book.id)
+                    showPlayer = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                        showPlayer = false
+                        listening.requestFollowAlong(bookID: book.id)
+                    }
+                }
+            }
+            // 仅供自测：开播后直接从听书组件打开阅读页跟读
+            if args.contains("--debug-follow") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    guard let book = store.books.first else { return }
+                    listening.resume(bookID: book.id)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        listening.requestFollowAlong(bookID: book.id)
+                    }
+                }
+            }
+        }
+        .onChange(of: listening.readerRequest) { _, id in
+            guard let id, let book = store.book(id) else { return }
+            _ = listening.consumeReaderRequest()
+            openReaderFollowing(book: book)
+        }
+    }
+
+    /// 「边听边读」= 关掉播放器，重建阅读页并让它从朗读位置开始跟随。
+    /// 先置 nil 再赋值，保证 fullScreenCover 一定重新 present（ReaderView.prepare 会跑）。
+    private func openReaderFollowing(book: Book) {
+        showPlayer = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            activeBook = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                activeBook = book
+            }
         }
     }
 

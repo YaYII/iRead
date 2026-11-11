@@ -191,9 +191,6 @@ struct ListeningPlayerView: View {
 
     @State private var showBooks = false
     @State private var showChapters = false
-    /// 边听边读：在听书组件内部切到正文视图，不回到阅读页
-    /// `--debug-readalong` 仅供自动化截图，正常启动永远从播放器页开始
-    @State private var showReadAlong = ProcessInfo.processInfo.arguments.contains("--debug-readalong")
 
     private var theme: ReadingTheme { settings.theme }
 
@@ -206,12 +203,6 @@ struct ListeningPlayerView: View {
             background
             if listening.bookID == nil {
                 emptyState
-            } else if showReadAlong {
-                ListeningReadAlongView {
-                    withAnimation(.easeInOut(duration: 0.2)) { showReadAlong = false }
-                }
-                .environmentObject(store)
-                .environmentObject(settings)
             } else {
                 content
             }
@@ -476,10 +467,13 @@ struct ListeningPlayerView: View {
         }
     }
 
-    /// 边听边读入口：切到听书组件自己的正文视图，读到哪亮到哪，不用回阅读页
+    /// 边听边读入口：打开**真正的阅读界面**，不是听书组件里的第二个正文视图。
+    /// 阅读页会从朗读位置开始跟读，并自带「原进度 / 从本页听」。
     private var readAlongRow: some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.2)) { showReadAlong = true }
+            guard let id = listening.bookID else { return }
+            dismiss()
+            ListeningCenter.shared.requestFollowAlong(bookID: id)
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: "book.pages")
@@ -489,7 +483,7 @@ struct ListeningPlayerView: View {
                     Text("边听边读")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(theme.foreground)
-                    Text("正文跟着朗读走，手动滑动可自行阅读")
+                    Text("打开阅读界面跟随朗读，可一键回原进度")
                         .font(.caption2)
                         .foregroundStyle(theme.secondary)
                 }
