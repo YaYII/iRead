@@ -86,6 +86,11 @@ struct ReaderView: View {
         }
         .preferredColorScheme(theme.colorScheme)
         .onAppear { prepare() }
+        // 阅读器已经开着时，「边听边读」只收起听书界面；
+        // 这里让**当前这一页**原地进入跟读，不重建 fullScreenCover。
+        .onChange(of: listening.isFollowAlong) { _, on in
+            if on, listening.bookID == bookID { enterFollowMode() }
+        }
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
             persistScrollProgress(
@@ -452,8 +457,12 @@ struct ReaderView: View {
     /// 之后朗读每换一句，`syncListeningHighlight` 的 `ensureVisible` 会把视口带过去。
     private func enterFollowMode() {
         guard let content else { return }
-        // 只记第一次：sheet 收起过程中 SwiftUI 可能多次 prepare，别把原进度覆盖掉
-        ListeningCenter.shared.saveFollowOrigin(chapter: chapterIndex, char: scrollAnchorChar)
+        // 只记第一次：别把原进度覆盖成朗读位置。
+        // 用 scrollProxy 的实时视口坐标，而不是排版锚点 —— 用户可能已经滑过几屏。
+        ListeningCenter.shared.saveFollowOrigin(
+            chapter: scrollProxy.chapter,
+            char: scrollProxy.characterIndex
+        )
         let ch = min(max(0, listening.spokenChapter), max(0, content.chapterCount - 1))
         let length = content.chapterText(at: ch).length
         let char = min(max(0, listening.currentChar), max(0, length - 1))
@@ -655,5 +664,9 @@ struct ReaderView: View {
         if args.contains("--eyecare") { settings.eyeCare = true }
         // 从听书组件点「边听边读」进来：阅读页从朗读位置开始跟读
         if followMode { enterFollowMode() }
+        #if DEBUG
+        // 自测：统计 prepare 次数，用来确认「阅读器已启动」时没有重新唤起
+        print("[Reader] prepare book=\(bookID.prefix(6)) follow=\(followMode)")
+        #endif
     }
 }

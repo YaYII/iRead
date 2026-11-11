@@ -105,6 +105,22 @@ struct ContentView: View {
                     }
                 }
             }
+            // 仅供自测：阅读器**已经开着**时点边听边读，验证不重新唤起阅读页
+            if args.contains("--debug-follow-existing") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    activeBook = store.books.first
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+                    guard let book = store.books.first else { return }
+                    listening.resume(bookID: book.id)
+                    showPlayer = true
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) {
+                    guard let book = store.books.first else { return }
+                    showPlayer = false
+                    listening.requestFollowAlong(bookID: book.id)
+                }
+            }
             // 仅供自测：开播后直接从听书组件打开阅读页跟读
             if args.contains("--debug-follow") {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -123,15 +139,16 @@ struct ContentView: View {
         }
     }
 
-    /// 「边听边读」= 关掉播放器，重建阅读页并让它从朗读位置开始跟随。
-    /// 先置 nil 再赋值，保证 fullScreenCover 一定重新 present（ReaderView.prepare 会跑）。
+    /// 「边听边读」：只收起听书界面，**绝不重新唤起阅读器**。
+    /// - 阅读器已经开着 → 什么都不做，现有阅读页通过 `isFollowAlong` 原地切到跟读
+    ///   （听 A 看 B 时当前页不是 A，就保持现状，不抢用户正在读的书）
+    /// - 还在书架 / 设置页 → 才把正在听的那本打开成阅读页
     private func openReaderFollowing(book: Book) {
+        let alreadyReading = activeBook != nil
         showPlayer = false
+        guard !alreadyReading else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-            activeBook = nil
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                activeBook = book
-            }
+            activeBook = book
         }
     }
 
