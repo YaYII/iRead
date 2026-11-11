@@ -244,18 +244,28 @@ final class ListeningCenter: ObservableObject {
 
     // MARK: - 章节
 
+    /// 切章：正在播才换段出声；待播放时只把游标挪过去，等用户按播放
     func nextChapter() {
         guard let id = bookID, chapterIndex + 1 < chapterCount else { return }
-        play(bookID: id, chapter: chapterIndex + 1, char: 0)
+        let target = chapterIndex + 1
+        if isActive {
+            play(bookID: id, chapter: target, char: 0)
+        } else {
+            seek(chapter: target, char: 0, persist: true)
+            updateNowPlaying()
+        }
     }
 
     func previousChapter() {
         guard let id = bookID else { return }
         // 已经听了一段就重听本章开头，否则退到上一章（和常见播放器一致）
-        if chapterProgress > 0.04 || chapterIndex == 0 {
-            play(bookID: id, chapter: chapterIndex, char: 0)
+        let target = (chapterProgress > 0.04 || chapterIndex == 0)
+            ? chapterIndex : max(0, chapterIndex - 1)
+        if isActive {
+            play(bookID: id, chapter: target, char: 0)
         } else {
-            play(bookID: id, chapter: max(0, chapterIndex - 1), char: 0)
+            seek(chapter: target, char: 0, persist: true)
+            updateNowPlaying()
         }
     }
 

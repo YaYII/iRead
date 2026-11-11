@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// 听书悬浮组件：右下角常驻「听」球，正在听时左下角浮出控制胶囊。
+/// 听书悬浮组件：右下角同一个位置，「听」与「播放」互斥显示。
 ///
-/// 两者都浮在内容之上，不是贴在工具栏里的长条，也不属于任何一本书的阅读页。
-/// 点任何一处都只打开听书界面；播放只由听书界面里的播放按钮触发。
+/// 没在播（含刚选好书、待播放）→ 只显示「听」球，点开听书界面；
+/// 一旦出声 / 暂停中 → 「听」隐藏，原地换成播放控制胶囊，点胶囊主体同样能进界面。
+/// 两者永远不同时出现，位置也不跳。
 struct ListeningFloatingDock: View {
     var onOpen: () -> Void
     /// 距容器底部的距离：书架要避开标签栏，阅读页要避开底部工具栏
@@ -13,26 +14,25 @@ struct ListeningFloatingDock: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
-            if listening.bookID != nil {
-                ListeningBubble(onOpen: onOpen)
-                    .frame(maxWidth: 226)
-                    .transition(.scale(scale: 0.85, anchor: .bottomLeading).combined(with: .opacity))
-            }
             Spacer(minLength: 0)
-            ListeningEntryButton(onOpen: onOpen)
+            if listening.isActive {
+                ListeningBubble(onOpen: onOpen)
+                    .frame(maxWidth: 244)
+                    .transition(.scale(scale: 0.86, anchor: .bottomTrailing).combined(with: .opacity))
+            } else {
+                ListeningEntryButton(onOpen: onOpen)
+                    .transition(.scale(scale: 0.86, anchor: .bottomTrailing).combined(with: .opacity))
+            }
         }
         .padding(.horizontal, 14)
         .padding(.bottom, bottomInset)
-        .animation(.spring(response: 0.28, dampingFraction: 0.82), value: listening.bookID)
+        .animation(.spring(response: 0.28, dampingFraction: 0.82), value: listening.isActive)
     }
 }
 
 /// 右下角的「听」悬浮球：永远在，点开听书组件，不会直接出声
 private struct ListeningEntryButton: View {
     var onOpen: () -> Void
-
-    @ObservedObject private var listening = ListeningCenter.shared
-    @EnvironmentObject private var settings: ReaderSettings
 
     var body: some View {
         Button(action: onOpen) {
@@ -42,12 +42,6 @@ private struct ListeningEntryButton: View {
                 Text("听")
                     .font(.system(size: 21, weight: .semibold))
                     .foregroundStyle(.white)
-                // 正在出声时套一圈主题色，静默 / 待播放时没有
-                if listening.isActive && !listening.isPaused {
-                    Circle()
-                        .stroke(settings.theme.accent, lineWidth: 2.5)
-                        .padding(2)
-                }
             }
             .frame(width: 54, height: 54)
             .shadow(color: .black.opacity(0.22), radius: 10, y: 4)
@@ -197,6 +191,9 @@ struct ListeningPlayerView: View {
 
     @State private var showBooks = false
     @State private var showChapters = false
+    /// 边听边读：在听书组件内部切到正文视图，不回到阅读页
+    /// `--debug-readalong` 仅供自动化截图，正常启动永远从播放器页开始
+    @State private var showReadAlong = ProcessInfo.processInfo.arguments.contains("--debug-readalong")
 
     private var theme: ReadingTheme { settings.theme }
 
@@ -209,6 +206,12 @@ struct ListeningPlayerView: View {
             background
             if listening.bookID == nil {
                 emptyState
+            } else if showReadAlong {
+                ListeningReadAlongView {
+                    withAnimation(.easeInOut(duration: 0.2)) { showReadAlong = false }
+                }
+                .environmentObject(store)
+                .environmentObject(settings)
             } else {
                 content
             }
@@ -263,6 +266,8 @@ struct ListeningPlayerView: View {
                     progressBlock
 
                     controls
+
+                    readAlongRow
 
                     speedRow
 
@@ -469,6 +474,38 @@ struct ListeningPlayerView: View {
                 }
             }
         }
+    }
+
+    /// 边听边读入口：切到听书组件自己的正文视图，读到哪亮到哪，不用回阅读页
+    private var readAlongRow: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) { showReadAlong = true }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "book.pages")
+                    .font(.system(size: 17))
+                    .foregroundStyle(theme.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("边听边读")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(theme.foreground)
+                    Text("正文跟着朗读走，手动滑动可自行阅读")
+                        .font(.caption2)
+                        .foregroundStyle(theme.secondary)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(theme.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(theme.foreground.opacity(0.05))
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     /// 待播放 / 已暂停 → 播放；真的在出声 → 暂停
