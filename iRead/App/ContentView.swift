@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var selection = 0
     @State private var activeBook: Book?
     @State private var showPlayer = false
+    @State private var showWiFiTransfer = false
 
     var body: some View {
         TabView(selection: $selection) {
@@ -52,9 +53,17 @@ struct ContentView: View {
                 .environmentObject(store)
                 .environmentObject(settings)
         }
+        .sheet(isPresented: $showWiFiTransfer) {
+            WiFiTransferView()
+                .environmentObject(store)
+        }
         .onAppear {
             // 仅供自动化预览/截图使用，正常启动不会命中
             let args = ProcessInfo.processInfo.arguments
+            // --debug-wifi：直接打开 WiFi 传书页（自测/自动化用）
+            if args.contains("--debug-wifi") {
+                showWiFiTransfer = true
+            }
             // --voice cantonese / male / female：截图时指定音色档位
             if let i = args.firstIndex(of: "--voice"), i + 1 < args.count {
                 switch args[i + 1] {

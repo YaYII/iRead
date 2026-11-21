@@ -12,6 +12,7 @@ struct ImportView: View {
     @ObservedObject private var settings = ReaderSettings.shared
 
     @State private var showFileImporter = false
+    @State private var showWiFiTransfer = false
     @State private var importedCount = 0
     @State private var errorMessages: [String] = []
     @State private var hasAttempted = false
@@ -33,6 +34,7 @@ struct ImportView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     header
                     importButton
+                    wifiButton
                     resultSection
                     capabilitiesSection
                     disclaimer
@@ -41,6 +43,10 @@ struct ImportView: View {
             }
         }
         .preferredColorScheme(settings.theme.colorScheme)
+        .sheet(isPresented: $showWiFiTransfer) {
+            WiFiTransferView()
+                .environmentObject(store)
+        }
         .fileImporter(
             isPresented: $showFileImporter,
             allowedContentTypes: [
@@ -117,6 +123,44 @@ struct ImportView: View {
             .background(
                 RoundedRectangle(cornerRadius: 14)
                     .fill(settings.theme.accent)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - WiFi 传书入口
+
+    private var wifiButton: some View {
+        Button {
+            showWiFiTransfer = true
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "wifi")
+                    .font(.title3)
+                    .foregroundStyle(settings.theme.accent)
+                    .frame(width: 30)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("WiFi 传书")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(settings.theme.foreground)
+                    Text("同一 WiFi 下，用电脑浏览器传小说到书架")
+                        .font(.caption)
+                        .foregroundStyle(settings.theme.secondary)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(settings.theme.secondary)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(settings.theme.foreground.opacity(0.05))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(settings.theme.secondary.opacity(0.25), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)

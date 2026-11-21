@@ -81,6 +81,13 @@ final class LibraryStore: ObservableObject {
         defer { if secured { url.stopAccessingSecurityScopedResource() } }
 
         guard let data = try? Data(contentsOf: url), !data.isEmpty else { throw LibraryError.unreadable }
+        return try importBook(data: data, title: url.deletingPathExtension().lastPathComponent)
+    }
+
+    /// 从内存数据导入（WiFi 传书用）。title 为不含扩展名的书名。
+    @discardableResult
+    func importBook(data: Data, title: String) throws -> Book {
+        guard !data.isEmpty else { throw LibraryError.unreadable }
         guard data.count < 60 * 1024 * 1024 else { throw LibraryError.tooLarge }
 
         let parsed = TextParser.parse(data)
@@ -91,10 +98,10 @@ final class LibraryStore: ObservableObject {
         let fileName = "\(id).txt"
         try body.write(to: booksDir.appendingPathComponent(fileName))
 
-        let title = url.deletingPathExtension().lastPathComponent
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let book = Book(
             id: id,
-            title: title,
+            title: trimmedTitle.isEmpty ? "未命名书籍" : trimmedTitle,
             author: "",
             fileName: fileName,
             addedAt: Date(),

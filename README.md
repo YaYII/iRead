@@ -41,6 +41,13 @@
 - 沉浸模式下方有迷你听书条：播放 / 暂停 / 停止；锁屏与后台可继续播放（`UIBackgroundModes: audio`）
 - 语速可调（x0.7 – x1.5），中断处理：来电自动暂停、拔耳机自动暂停
 
+### WiFi 传书
+书架右上角「+」→「导入书籍」→「WiFi 传书」开启服务，App 内会显示一个局域网地址（含本次 6 位访问码）。
+同一 WiFi 下的电脑/另一台手机用浏览器打开该地址，选 TXT 上传即自动进书架，支持一次选多本、UTF-8/GBK/UTF-16 编码、单本 60 MB 以内。
+每次开启服务访问码随机生成，地址泄露也不会被别人误传；传完可在 App 内点「停止」。服务只在本机监听，不连互联网、不扫描其它设备，传书过程不需要外网。
+
+> 传书时需要 iRead 保持在前台；切后台太久系统可能挂起本地服务。
+
 ### 内置内容
 三本**原创**演示小说（共 21 章约 1.4 万字）：《檐下晚晴》（都市温情）、《潮汐档案馆》（近未来科幻）、《青灯渡异录》（古典志怪）。首次启动自动灌入书架，可删除。
 
@@ -53,6 +60,7 @@ iRead/
   App/          iReadApp、ContentView（Tab：书架 / 设置）
   Models/       Models（Book/Chapter/Bookmark/主题/音色档位）、ReaderSettings
   Services/     TextParser（编码+分章）、LibraryStore（书库）、
+                WiFiTransferServer（局域网传书 HTTP 服务）、
                 BookContent（章节定位）、ChapterTextProvider（按章生成排版用的 NSAttributedString）、
                 ChapterScroller（TextKit 单章文字视图 + 连续滚动容器）、
                 PiperSynthesizer（sherpa-onnx 本地语音封装，双模型）、
