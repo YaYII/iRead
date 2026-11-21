@@ -88,6 +88,8 @@ struct ContentView: View {
         .onAppear {
             // 仅供自动化预览/截图使用，正常启动不会命中
             let args = ProcessInfo.processInfo.arguments
+            // --night：截图时强制夜间主题（任何入口都生效）
+            if args.contains("--night") { settings.theme = .night }
             // --debug-wifi：直接打开 WiFi 传书页（自测/自动化用）
             if args.contains("--debug-wifi") {
                 showWiFiTransfer = true
@@ -121,7 +123,6 @@ struct ContentView: View {
                     showPlayer = true
                 }
             } else if args.contains("--debug-reader") {
-                if args.contains("--night") { settings.theme = .night }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     activeBook = store.books.first
                 }
