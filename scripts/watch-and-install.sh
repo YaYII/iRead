@@ -13,9 +13,14 @@ for i in $(seq 1 120); do
   # 空列表形如 { "IDE.Identifiers.Prod" = ( ); }，括号内没有内容
   if printf '%s' "$ACCT" | grep -qE '\([[:space:]]*[^)[:space:]]' \
      || printf '%s' "$TEAM" | grep -qE '\{[[:space:]]*[^}[:space:]]'; then
-    echo "检测到 Xcode 账号，开始重新签名并安装"
-    ./scripts/install-device.sh
-    exit $?
+    # Team 缓存可能只是残留，真正的判据是「构建能不能签出名来」。
+    # 失败不要退出，继续等用户把账号加完。
+    echo "疑似检测到 Xcode 账号，尝试重新签名并安装…"
+    if ./scripts/install-device.sh; then
+      echo "✅ 安装完成"
+      exit 0
+    fi
+    echo "构建还没成功（账号可能尚未真正生效），继续等待…"
   fi
   sleep 10
 done
