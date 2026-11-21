@@ -116,6 +116,12 @@ struct SettingsView: View {
         sectionCard("关于") {
             infoRow(title: "应用名称", value: "iRead")
             infoRow(title: "版本", value: "1.0")
+            signingRow
+            if SigningHealth.current().needsAttention {
+                Text("签名快到期了：打开 SideStore → My Apps → Refresh All；或连电脑跑 ./scripts/install-device.sh。覆盖安装不会丢书架和进度。")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             HStack(spacing: 12) {
                 ForEach(["textformat", "book.pages", "speaker.wave.2", "wifi.slash"], id: \.self) { symbol in
                     Image(systemName: symbol)
@@ -125,6 +131,21 @@ struct SettingsView: View {
                 }
             }
             .padding(.top, 2)
+        }
+    }
+
+    /// 真机自签的剩余天数。普通 App 不能给自己续签，这里只负责让用户看得见、来得及刷新
+    private var signingRow: some View {
+        let status = SigningHealth.current()
+        return HStack(alignment: .firstTextBaseline) {
+            Text("签名有效期")
+                .font(.subheadline)
+                .foregroundStyle(theme.secondary)
+            Spacer(minLength: 8)
+            Text(status.summary)
+                .font(.subheadline.weight(status.needsAttention ? .semibold : .regular))
+                .foregroundStyle(status.needsAttention ? Color.orange : theme.foreground)
+                .multilineTextAlignment(.trailing)
         }
     }
 
