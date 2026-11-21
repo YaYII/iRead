@@ -6,15 +6,20 @@ import UIKit
 /// 一章正文。用系统 `UITextView`（TextKit 1）承载，**不再自己画字**。
 ///
 /// 这样长按选字、放大镜、左右选中手柄、复制 / 查询 / 翻译全部是系统行为，
-/// 手感和别家阅读器一致；我们只在编辑菜单最前面加一个「从这里朗读」。
+/// 手感和别家阅读器一致；我们只在编辑菜单最前面加一个「播放」。
 /// 自己用 CoreText 画字 + 自绘选中框，永远做不出系统那套选中手感。
 final class ChapterTextView: UITextView, UITextViewDelegate {
 
-    /// 点「从这里朗读」的回调，参数是选中区间（章内字符坐标）
+    /// 点「播放」的回调，参数是选中区间（章内字符坐标）
     var onSpeakSelection: ((NSRange) -> Void)?
 
-    /// 当前朗读高亮区间，避免重复写 textStorage
+    /// 当前朗读区间（章内坐标）
     private var speechRange: NSRange?
+    /// 当前朗读文字色。主题切换时视图可能被复用，区间没变但颜色变了，也得重刷。
+    private var speechColor: UIColor?
+    /// 被改成朗读色的片段及其原色。撤销时按原样还原 ——
+    /// 章节首行标题的字号字重和正文不同，不能一刀切回某个固定颜色。
+    private var savedColors: [(range: NSRange, color: UIColor?)] = []
 
     init(attributed: NSAttributedString, width: CGFloat, theme: ReadingTheme) {
         super.init(frame: .zero, textContainer: nil)
@@ -55,19 +60,38 @@ final class ChapterTextView: UITextView, UITextViewDelegate {
 
     // MARK: 朗读高亮
 
-    /// 用背景色属性做高亮，系统选中时两者不会互相打架
+    /// 朗读进度：把正在念的字**换成朗读色**（番茄那种「字变色」，不是给字加底色）。
+    ///
+    /// 为什么不用 `.backgroundColor`：底色由 TextKit 按**行片段**填充，换行符会一路
+    /// 铺到行尾、相邻两行之间还没有缝，多行连起来就是一大块矩形 —— 看起来像「整行/
+    /// 整块区域亮」。文字色只作用在有字形的字符上，换行、段首缩进这些空白涂了也看不见，
+    /// 视觉上就是「这几个字变成了彩色」。
     func setSpeechHighlight(_ range: NSRange?, color: UIColor) {
-        guard range != speechRange else { return }
+        guard range != speechRange || color != speechColor else { return }
         let length = textStorage.length
+        speechRange = range
+        speechColor = color
+
         textStorage.beginEditing()
-        if let old = speechRange, old.length > 0, old.location + old.length <= length {
-            textStorage.removeAttribute(.backgroundColor, range: old)
+        // 先把上一次改过的片段还原，再上新的
+        for saved in savedColors where saved.range.location + saved.range.length <= length {
+            if let original = saved.color {
+                textStorage.addAttribute(.foregroundColor, value: original, range: saved.range)
+            } else {
+                textStorage.removeAttribute(.foregroundColor, range: saved.range)
+            }
         }
-        if let range, range.length > 0, range.location + range.length <= length {
-            textStorage.addAttribute(.backgroundColor, value: color, range: range)
+        savedColors.removeAll()
+
+        if let range, range.length > 0, range.location < length {
+            let target = NSRange(location: range.location, length: min(range.length, length - range.location))
+            // 按属性段记下原色（标题行和正文的颜色可能不同），撤销时逐段还原
+            textStorage.enumerateAttribute(.foregroundColor, in: target, options: []) { value, run, _ in
+                savedColors.append((run, value as? UIColor))
+            }
+            textStorage.addAttribute(.foregroundColor, value: color, range: target)
         }
         textStorage.endEditing()
-        speechRange = range
     }
 
     // MARK: 坐标换算
@@ -106,7 +130,7 @@ final class ChapterTextView: UITextView, UITextViewDelegate {
 
     // MARK: 编辑菜单
 
-    /// 在系统菜单最前面插入「从这里朗读」。
+    /// 在系统菜单最前面插入「播放」。
     /// 放在后面会被系统折叠到第二页，用户根本翻不到。
     func textView(
         _ textView: UITextView,
@@ -137,7 +161,7 @@ final class ChapterTextView: UITextView, UITextViewDelegate {
     private func makeEditMenu(for range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
         guard range.length > 0 else { return nil }
         let speak = UIAction(
-            title: "从这里朗读",
+            title: "播放",
             image: UIImage(systemName: "play.fill")
         ) { [weak self] _ in
             guard let self else { return }
@@ -187,7 +211,7 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
 
     var onPositionChange: ((Int, Int) -> Void)?
     var onTap: (() -> Void)?
-    /// 编辑菜单「从这里朗读」的回调（章号，选中句在章内的起点）
+    /// 编辑菜单「播放」的回调（章号，选中句在章内的起点）
     var onStartSpeech: ((Int, Int) -> Void)?
     /// 跟随状态变化（手动滚开 / 回到朗读位置 / 滚回朗读行附近）。
     /// 阅读页据此决定要不要浮出「回到朗读位置」按钮。
@@ -202,7 +226,7 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
             onFollowingChange?(isFollowingSpeech)
         }
     }
-    /// 当前朗读高亮（重建窗口后要补画回去）
+    /// 当前朗读进度（重建窗口后要把变色补回去）
     private var highlight: (chapter: Int, range: NSRange?, color: UIColor) = (0, nil, .clear)
 
     override init(frame: CGRect) {
@@ -289,8 +313,9 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         return nil
     }
 
-    // MARK: 朗读高亮
+    // MARK: 朗读进度
 
+    /// 把正在念的字染成 `color`，其余章节恢复原色
     func setHighlight(chapter: Int, range: NSRange?, color: UIColor) {
         highlight = (chapter, range, color)
         for (ch, view) in views {
@@ -423,7 +448,7 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         for ch in lo...hi { loadChapter(ch) }
 
         relayoutPositions()
-        // 重建后把朗读高亮补回去
+        // 重建后把朗读变色补回去
         if let view = views[highlight.chapter], let range = highlight.range {
             view.setSpeechHighlight(range, color: highlight.color)
         }
@@ -727,7 +752,7 @@ struct BookScrollView: UIViewRepresentable {
     let signature: String
     let proxy: ScrollProxy
 
-    /// 朗读高亮：章号 + 章内字符区间
+    /// 朗读进度：章号 + 章内字符区间 + 这些字要变成的颜色
     let highlightChapter: Int
     let highlightRange: NSRange?
     let highlightColor: UIColor

@@ -142,9 +142,19 @@ enum ReadingTheme: String, CaseIterable, Identifiable, Codable {
     var uiAccent: UIColor { UIColor(hex: accentHex) }
     var colorScheme: ColorScheme { self == .night ? .dark : .light }
 
-    /// 朗读高亮底色：主题色淡压一层，深色主题稍重一点才看得出来
-    var speechHighlight: UIColor {
-        uiAccent.withAlphaComponent(self == .night ? 0.30 : 0.20)
+    /// 朗读时文字变成的颜色（番茄那种「字变色」，不是加底色）。
+    ///
+    /// 底色由 TextKit 按行片段填充，换行符会铺到行尾、相邻行之间没缝，
+    /// 看着就是「整行/整块区域亮」；只改字色才是逐字变色。
+    /// 正文是十几号的小字，主题强调色直接用会偏淡，所以浅色主题压深一档、
+    /// 夜间提亮一档，保证一眼就能看出读到哪儿了。
+    var speechText: UIColor {
+        switch self {
+        case .paper: return UIColor(hex: 0xA14A24)
+        case .sepia: return UIColor(hex: 0x8A4A22)
+        case .green: return UIColor(hex: 0x3F6A41)
+        case .night: return UIColor(hex: 0xE6AC78)
+        }
     }
 }
 

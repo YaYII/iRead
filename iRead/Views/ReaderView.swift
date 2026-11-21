@@ -337,7 +337,7 @@ struct ReaderView: View {
             proxy: scrollProxy,
             highlightChapter: listening.bookID == bookID ? listening.spokenChapter : -1,
             highlightRange: speechHighlight,
-            highlightColor: theme.speechHighlight,
+            highlightColor: theme.speechText,
             onPositionChange: { ch, char in
                 scrollProxy.chapter = ch
                 scrollProxy.characterIndex = char
@@ -628,8 +628,10 @@ struct ReaderView: View {
         scrollProxy.ensureVisible(chapter: listening.spokenChapter, char: range.location)
     }
 
-    /// 长按选中一句后点气泡 ▶：把听书起点定位到这句，并打开听书界面。
-    /// 点击屏幕不再触发朗读——点到的位置无法可靠对应到某一块文字，
+    /// 长按选中一句后点「播放」：定位到这句并**立刻出声**，不弹播放器。
+    /// 用户已经在阅读页里看着这句话了，再弹一个播放界面等于让人多点一次、
+    /// 还被遮住正文，交互上是多余的。想调语速/换书，再点底部胶囊进播放器。
+    /// 点击屏幕不触发朗读——点到的位置无法可靠对应到某一块文字，
     /// 必须先长按选中，把要读的句子确定下来。
     private func startSpeechFromSelection(chapter: Int, char: Int) {
         guard let content, content.chapters.indices.contains(chapter) else { return }
@@ -637,11 +639,9 @@ struct ReaderView: View {
             // 本来就在听这本：只是换个起点，别把声音掐掉
             listening.seekTo(chapter: chapter, char: char)
         } else {
-            // 没在听（或听的是别的书）：装好这本 + 定位到选中句，等用户按播放
-            listening.prepare(bookID: bookID, fallbackChapter: chapter, fallbackChar: char)
-            listening.locate(chapter: chapter, char: char)
+            // 没在听（或听的是别的书）：装好这本并从选中句直接开播
+            listening.play(bookID: bookID, chapter: chapter, char: char)
         }
-        showPlayer = true
     }
 
     // MARK: - 进度 / 书签

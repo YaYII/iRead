@@ -2,7 +2,7 @@ import UIKit
 
 // MARK: - 句子边界
 
-/// 「从这里朗读」以整句为单位：中文长句从半句开始读很别扭，
+/// 编辑菜单「播放」以整句为单位：中文长句从半句开始读很别扭，
 /// 而系统选中是用户手指划到的范围，起读点要落到有字的地方。
 enum SentenceRange {
     private static let terminators: Set<Character> = [
