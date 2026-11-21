@@ -12,6 +12,8 @@ struct BookshelfView: View {
     var onListenBook: (Book) -> Void
 
     @State private var searchText = ""
+    @State private var showSearch = false
+    @FocusState private var searchFocused: Bool
     @State private var showGrid = true
     @State private var showImport = false
 
@@ -30,12 +32,9 @@ struct BookshelfView: View {
         self.onListenBook = onListenBook
     }
 
+    /// 番茄式书架：一屏三列，封面小、信息少。窄屏（SE）也能放下三列。
     private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 20)]
-    }
-
-    private var finishedCount: Int {
-        store.books.filter { $0.isFinished }.count
+        [GridItem(.adaptive(minimum: 88, maximum: 124), spacing: 12)]
     }
 
     /// 置顶优先，其次最近阅读，其次添加时间；搜索按书名 / 作者过滤。
@@ -73,8 +72,10 @@ struct BookshelfView: View {
                 if let message = store.lastError {
                     errorBanner(message)
                 }
-                searchBar
-                layoutToolbar
+                if showSearch || !searchText.isEmpty {
+                    searchBar
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
 
                 ScrollView {
                     if sortedBooks.isEmpty {
@@ -124,32 +125,66 @@ struct BookshelfView: View {
 
     // MARK: - 顶部区域
 
+    /// 紧凑标题行：书名标题 + 数量 + 视图切换 + 导入，一行说完。
     private var header: some View {
-        HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("书架")
-                    .font(.largeTitle.bold())
-                    .foregroundStyle(settings.theme.foreground)
-                Text("共 \(store.books.count) 本 · 已读 \(finishedCount) 本")
-                    .font(.subheadline)
-                    .foregroundStyle(settings.theme.secondary)
+        HStack(alignment: .center, spacing: 8) {
+            Text("书架")
+                .font(.title2.bold())
+                .foregroundStyle(settings.theme.foreground)
+            Text("\(store.books.count) 本")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(settings.theme.secondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(settings.theme.secondary.opacity(0.14)))
+            Spacer(minLength: 4)
+            // 搜索收进图标，和番茄书架一致：不占常驻一行
+            Button {
+                if showSearch {
+                    searchFocused = false
+                    searchText = ""
+                    withAnimation(.easeInOut(duration: 0.18)) { showSearch = false }
+                } else {
+                    withAnimation(.easeInOut(duration: 0.18)) { showSearch = true }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { searchFocused = true }
+                }
+            } label: {
+                Image(systemName: "magnifyingglass")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(showSearch ? settings.theme.accent : settings.theme.secondary)
+                    .frame(width: 34, height: 34)
+                    .contentShape(Rectangle())
             }
-            Spacer()
+            .buttonStyle(.plain)
+            .accessibilityLabel(showSearch ? "收起搜索" : "搜索书架")
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { showGrid.toggle() }
+            } label: {
+                Image(systemName: showGrid ? "square.grid.2x2" : "list.bullet")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(settings.theme.secondary)
+                    .frame(width: 34, height: 34)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(showGrid ? "切换为列表视图" : "切换为网格视图")
+
             Button {
                 showImport = true
             } label: {
                 Image(systemName: "plus")
-                    .font(.title3.weight(.semibold))
+                    .font(.subheadline.weight(.bold))
                     .foregroundStyle(.white)
-                    .frame(width: 38, height: 38)
+                    .frame(width: 32, height: 32)
                     .background(Circle().fill(settings.theme.accent))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("导入书籍")
         }
         .padding(.horizontal, 20)
-        .padding(.top, 20)
-        .padding(.bottom, 12)
+        .padding(.top, 6)
+        .padding(.bottom, 10)
     }
 
     @ViewBuilder
@@ -181,75 +216,44 @@ struct BookshelfView: View {
     }
 
     private var searchBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
+                .font(.footnote)
                 .foregroundStyle(settings.theme.secondary)
             TextField("搜索书名或作者", text: $searchText)
+                .font(.footnote)
+                .focused($searchFocused)
                 .foregroundStyle(settings.theme.foreground)
                 .tint(settings.theme.accent)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .submitLabel(.search)
+                .onSubmit { searchFocused = false }
             if !searchText.isEmpty {
                 Button {
                     searchText = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
+                        .font(.footnote)
                         .foregroundStyle(settings.theme.secondary)
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
         .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(settings.theme.secondary.opacity(0.14))
+            RoundedRectangle(cornerRadius: 10)
+                .fill(settings.theme.secondary.opacity(0.13))
         )
         .padding(.horizontal, 20)
-        .padding(.bottom, 10)
-    }
-
-    private var layoutToolbar: some View {
-        HStack {
-            Text(showGrid ? "网格视图" : "列表视图")
-                .font(.footnote)
-                .foregroundStyle(settings.theme.secondary)
-            Spacer()
-            HStack(spacing: 4) {
-                layoutButton(systemName: "square.grid.2x2", selected: showGrid) {
-                    showGrid = true
-                }
-                layoutButton(systemName: "list.bullet", selected: !showGrid) {
-                    showGrid = false
-                }
-            }
-            .padding(3)
-            .background(Capsule().fill(settings.theme.secondary.opacity(0.12)))
-        }
-        .padding(.horizontal, 20)
-        .padding(.bottom, 10)
-    }
-
-    private func layoutButton(
-        systemName: String,
-        selected: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(selected ? .white : settings.theme.secondary)
-                .frame(width: 30, height: 26)
-                .background(Capsule().fill(selected ? settings.theme.accent : Color.clear))
-        }
-        .buttonStyle(.plain)
+        .padding(.bottom, 12)
     }
 
     // MARK: - 内容区域
 
     private var gridContent: some View {
-        LazyVGrid(columns: columns, spacing: 22) {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 18) {
             ForEach(sortedBooks) { book in
                 gridCard(book: book)
             }
@@ -259,7 +263,7 @@ struct BookshelfView: View {
     }
 
     private var listContent: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 8) {
             ForEach(sortedBooks) { book in
                 listRow(book: book)
             }
@@ -302,26 +306,23 @@ struct BookshelfView: View {
 
     // MARK: - 书卡
 
+    /// 网格卡只剩封面 + 一行书名，和番茄书架一致；作者、进度都在封面里。
     private func gridCard(book: Book) -> some View {
         Button {
             onOpenBook(book)
         } label: {
-            VStack(alignment: .leading, spacing: 10) {
-                coverView(book: book)
+            VStack(alignment: .leading, spacing: 6) {
+                // 先用透明占位把格子撑成 3:4，再叠封面，保证每列封面等宽等高
+                Color.clear
                     .aspectRatio(3.0 / 4.0, contentMode: .fit)
+                    .overlay { coverView(book: book) }
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(book.title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(settings.theme.foreground)
-                        .lineLimit(1)
-                    Text(book.displayAuthor)
-                        .font(.caption)
-                        .foregroundStyle(settings.theme.secondary)
-                        .lineLimit(1)
-                }
-
-                progressBar(progress: book.progress)
+                Text(book.title)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(settings.theme.foreground)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .contentShape(Rectangle())
         }
@@ -333,42 +334,44 @@ struct BookshelfView: View {
         Button {
             onOpenBook(book)
         } label: {
-            HStack(spacing: 14) {
-                coverView(book: book, compact: true)
-                    .frame(width: 62, height: 84)
+            HStack(spacing: 10) {
+                coverView(book: book, showsBadges: false, showsTitle: false)
+                    .frame(width: 46, height: 62)
 
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 5) {
                         Text(book.title)
-                            .font(.headline)
+                            .font(.subheadline.weight(.semibold))
                             .foregroundStyle(settings.theme.foreground)
                             .lineLimit(1)
                         if book.isPinned {
                             Image(systemName: "pin.fill")
-                                .font(.caption2)
+                                .font(.system(size: 9))
                                 .foregroundStyle(settings.theme.accent)
                         }
                         if book.isFinished {
                             Image(systemName: "checkmark.circle.fill")
-                                .font(.caption2)
+                                .font(.system(size: 9))
                                 .foregroundStyle(settings.theme.accent)
                         }
                     }
                     Text(book.displayAuthor)
-                        .font(.caption)
+                        .font(.caption2)
                         .foregroundStyle(settings.theme.secondary)
                         .lineLimit(1)
                     Text("共 \(book.chapterCount) 章 · 已读 \(book.progressPercent)")
                         .font(.caption2)
                         .foregroundStyle(settings.theme.secondary)
                         .lineLimit(1)
-                    progressBar(progress: book.progress)
                 }
                 Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(settings.theme.secondary.opacity(0.7))
             }
-            .padding(12)
+            .padding(9)
             .background(
-                RoundedRectangle(cornerRadius: 16)
+                RoundedRectangle(cornerRadius: 12)
                     .fill(settings.theme.foreground.opacity(0.05))
             )
             .contentShape(Rectangle())
@@ -377,95 +380,89 @@ struct BookshelfView: View {
         .contextMenu { contextMenuItems(for: book) }
     }
 
-    /// 竖向渐变封面，中央书名 + 作者，角标与进度。compact 用于列表小封面。
-    private func coverView(book: Book, compact: Bool = false) -> some View {
+    /// 生成式封面：渐变底 + 居中书名，底部一条细进度线；置顶 / 已读用小角标。
+    /// 列表里的小缩略图不重复画书名（右侧已有标题），只留色块和书脊。
+    private func coverView(
+        book: Book,
+        showsBadges: Bool = true,
+        showsTitle: Bool = true
+    ) -> some View {
         let hue = min(1, max(0, book.coverHue))
-        let top = Color(hue: hue, saturation: 0.58, brightness: 0.72)
+        let top = Color(hue: hue, saturation: 0.56, brightness: 0.74)
         let bottom = Color(hue: hue, saturation: 0.68, brightness: 0.42)
+        let progress = min(1, max(0, book.progress))
 
         return ZStack {
-            RoundedRectangle(cornerRadius: 16)
-                .fill(
-                    LinearGradient(
-                        colors: [top, bottom],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
+            LinearGradient(colors: [top, bottom], startPoint: .top, endPoint: .bottom)
 
             // 书脊
-            HStack {
+            HStack(spacing: 0) {
                 Rectangle()
-                    .fill(Color.black.opacity(0.14))
-                    .frame(width: 7)
-                Spacer()
+                    .fill(Color.black.opacity(0.12))
+                    .frame(width: 4)
+                Spacer(minLength: 0)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 16))
 
-            VStack(spacing: compact ? 4 : 8) {
+            if showsTitle {
                 Text(book.title)
-                    .font(compact ? .caption.weight(.bold) : .title3.weight(.bold))
+                    .font(.caption.weight(.bold))
                     .multilineTextAlignment(.center)
-                    .lineLimit(compact ? 2 : 3)
+                    .lineLimit(3)
                     .minimumScaleFactor(0.6)
                     .foregroundStyle(.white)
-                    .shadow(color: .black.opacity(0.22), radius: 2, x: 0, y: 1)
-                Text(book.displayAuthor)
-                    .font(compact ? .caption2 : .caption)
-                    .foregroundStyle(.white.opacity(0.85))
-                    .lineLimit(1)
+                    .shadow(color: .black.opacity(0.22), radius: 1.5, x: 0, y: 1)
+                    .padding(.horizontal, 9)
+                    .padding(.bottom, 6)
             }
-            .padding(.horizontal, compact ? 8 : 14)
 
-            if !compact {
+            if showsBadges {
                 VStack {
-                    HStack(alignment: .top) {
+                    HStack(alignment: .top, spacing: 4) {
                         if book.isPinned {
-                            badge(systemName: "pin.fill", rotation: -25)
+                            cornerBadge(systemName: "pin.fill", rotation: -25)
                         }
-                        Spacer()
+                        Spacer(minLength: 0)
                         if book.isFinished {
-                            badge(systemName: "checkmark.circle.fill", rotation: 0)
+                            cornerBadge(systemName: "checkmark", rotation: 0)
                         }
                     }
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        Text(book.progressPercent)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Capsule().fill(Color.black.opacity(0.28)))
+                    Spacer(minLength: 0)
+                }
+                .padding(5)
+            }
+
+            // 阅读进度：贴底细线，不额外占高度
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Rectangle()
+                            .fill(Color.white.opacity(0.18))
+                        if progress > 0 {
+                            Rectangle()
+                                .fill(Color.white.opacity(0.9))
+                                .frame(width: geo.size.width * CGFloat(progress))
+                        }
                     }
                 }
-                .padding(10)
+                .frame(height: 2.5)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 5)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
+        )
+        .shadow(color: .black.opacity(0.16), radius: 6, x: 0, y: 3)
     }
 
-    private func badge(systemName: String, rotation: Double) -> some View {
+    private func cornerBadge(systemName: String, rotation: Double) -> some View {
         Image(systemName: systemName)
-            .font(.caption.weight(.bold))
+            .font(.system(size: 8, weight: .bold))
             .foregroundStyle(.white)
             .rotationEffect(.degrees(rotation))
-            .padding(6)
-            .background(Circle().fill(Color.black.opacity(0.28)))
-    }
-
-    private func progressBar(progress: Double) -> some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(settings.theme.secondary.opacity(0.22))
-                Capsule()
-                    .fill(settings.theme.accent)
-                    .frame(width: geo.size.width * CGFloat(min(1, max(0, progress))))
-            }
-        }
-        .frame(height: 4)
+            .frame(width: 16, height: 16)
+            .background(Circle().fill(Color.black.opacity(0.35)))
     }
 
     // MARK: - 长按菜单
