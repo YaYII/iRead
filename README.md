@@ -132,6 +132,18 @@ xcodebuild -project iRead.xcodeproj -scheme iRead \
 
 真机签名使用 team `8VM4LPD9YP`，`xcodebuild` 需带 `-allowProvisioningUpdates` 自动生成描述文件。
 
+```bash
+# 打成 IPA，导进 iPhone 上的 SideStore（手机端自己续签）
+./scripts/make-ipa.sh            # → dist/iRead.ipa
+
+# 电脑在手边时的兜底：剩余 <48h 才重装
+./scripts/auto-refresh.sh
+```
+
+免费 Apple ID 的**描述文件**只有 7 天（开发证书是 1 年，两回事），到期 App 打不开但数据不丢。
+三条续签路线的取舍、SideStore 一次性设置步骤、iOS 26.4+ 的 remote pairing 坑，见
+[**docs/签名与续期.md**](docs/签名与续期.md)。设置 → 关于 里也能直接看到剩余天数。
+
 ## 调试参数（仅自动化截图/自检用，正常使用不涉及）
 
 - `--debug-reader`：启动后直接打开第一本书
