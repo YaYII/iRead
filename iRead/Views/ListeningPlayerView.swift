@@ -194,9 +194,6 @@ struct ListeningPlayerView: View {
 
     private var theme: ReadingTheme { settings.theme }
 
-    private let speeds: [(rate: Double, label: String)] = [
-        (0.40, "0.8x"), (0.50, "1.0x"), (0.60, "1.2x"), (0.70, "1.4x")
-    ]
 
     var body: some View {
         ZStack {
@@ -434,20 +431,46 @@ struct ListeningPlayerView: View {
         .padding(.top, 2)
     }
 
+    /// 语速：一条 0.4x～4.0x 的滑杆 + 刻度，像番茄那样拖到哪儿是哪儿。
+    ///
+    /// 以前是四颗固定档位按钮（0.8/1.0/1.2/1.4），想听 2 倍速根本没有。
+    /// 滑杆的好处是连续可调，而且拖动时 `ListeningCenter` 已经做了 350ms 防抖，
+    /// 不会一路掐断音频。
     private var speedRow: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            rowTitle("语速")
-            HStack(spacing: 8) {
-                ForEach(speeds, id: \.rate) { item in
-                    chip(
-                        item.label,
-                        active: abs(settings.speechRate - item.rate) < 0.001
-                    ) {
-                        settings.speechRate = item.rate
-                    }
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("语速 · \(Self.speedLabel(settings.speechSpeed))")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(theme.foreground.opacity(0.9))
+                    .monospacedDigit()
+                Spacer()
+                Button("重置") {
+                    settings.speechSpeed = 1.0
                 }
+                .font(.system(size: 13))
+                .foregroundStyle(abs(settings.speechSpeed - 1.0) > 0.001
+                                 ? theme.accent
+                                 : theme.secondary.opacity(0.35))
+                .disabled(abs(settings.speechSpeed - 1.0) <= 0.001)
             }
+
+            SpeedSlider(
+                value: $settings.speechSpeed,
+                range: Self.speedRange,
+                ticks: Self.speedTicks,
+                theme: theme
+            )
+            .padding(.top, 2)
         }
+    }
+
+    /// 语速范围与刻度：0.4x 起步，0.5 一格一直到 4.0x
+    private static let speedRange: ClosedRange<Double> = 0.4...4.0
+    private static let speedTicks: [Double] = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
+
+    /// 1.0 显示成「1.0x」，1.7 显示成「1.7x」
+    static func speedLabel(_ speed: Double) -> String {
+        String(format: "%.1fx", speed)
     }
 
     private var voiceRow: some View {
@@ -658,5 +681,109 @@ private struct ListeningBookPicker: View {
                 .fill(current ? theme.accent.opacity(0.10) : theme.foreground.opacity(0.05))
         )
         .contentShape(RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+// MARK: - 语速滑杆
+
+/// 0.4x～4.0x 的语速滑杆 + 刻度，番茄那种「拖到哪儿是哪儿」的手感。
+///
+/// 为什么自己画而不用系统 `Slider`：系统滑杆的拇指会占掉轨道两端（各半个拇指宽），
+/// 值域被压在 `[拇指半径, 宽度-拇指半径]` 里，而刻度是按整个宽度摆的 —— 结果就是
+/// 「1.4x」的拇指会落在 1.5 的刻度上。自己画以后，拇指、已选段、刻度共用一套坐标，
+/// 数值和刻度永远对得上。
+///
+/// 刻度没有画在轨道上：轨道只有 4pt 高，刻度线横切过去会把轨道切成一段段虚线，
+/// 看着像进度条碎掉。改成轨道下面单独一行细刻度，轨道保持连续。
+private struct SpeedSlider: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let ticks: [Double]
+    let theme: ReadingTheme
+
+    /// 拖动时每 0.1 一档
+    private let step: Double = 0.1
+    private let trackHeight: CGFloat = 30
+    private let thumbSize: CGFloat = 24
+
+    var body: some View {
+        VStack(spacing: 0) {
+            GeometryReader { geo in
+                let width = geo.size.width
+                let span = range.upperBound - range.lowerBound
+                // 两端各留半个拇指，否则拉到 0.4x / 4.0x 时拇指会被裁掉一半
+                let inset = thumbSize / 2
+                let track = max(1, width - thumbSize)
+                let pct = min(max((value - range.lowerBound) / span, 0), 1)
+                let thumbX = inset + track * pct
+
+                ZStack {
+                    Capsule()
+                        .fill(theme.foreground.opacity(0.16))
+                        .frame(width: track, height: 4)
+                        .position(x: inset + track / 2, y: trackHeight / 2)
+
+                    Capsule()
+                        .fill(theme.accent)
+                        .frame(width: max(0, thumbX - inset), height: 4)
+                        .position(x: inset + max(0, thumbX - inset) / 2, y: trackHeight / 2)
+
+                    // 橙色实心 + 一圈背景色描边，深浅主题下都跳得出来
+                    Circle()
+                        .fill(theme.accent)
+                        .overlay(Circle().strokeBorder(theme.background, lineWidth: 2.5))
+                        .frame(width: thumbSize, height: thumbSize)
+                        .shadow(color: .black.opacity(0.28), radius: 4, y: 1)
+                        .position(x: thumbX, y: trackHeight / 2)
+                }
+                .contentShape(Rectangle())
+                // 播放器正文在 ScrollView 里，普通 gesture 会被竖向滚动抢走；
+                // 滑杆是全宽控件，用高优先级手势接管这一条区域才拖得动。
+                .highPriorityGesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { gesture in
+                            let raw = range.lowerBound
+                                + ((gesture.location.x - inset) / track) * span
+                            let snapped = (raw / step).rounded() * step
+                            let clamped = min(max(snapped, range.lowerBound), range.upperBound)
+                            // 浮点误差会让 1.7000000000000002 这种值落进界面，先修一下
+                            value = (clamped * 10).rounded() / 10
+                        }
+                )
+            }
+            .frame(height: trackHeight)
+
+            // 刻度线 + 数字：与滑杆共用 inset / track，所以永远对得齐
+            GeometryReader { geo in
+                let width = geo.size.width
+                let span = range.upperBound - range.lowerBound
+                let inset = thumbSize / 2
+                let track = max(1, width - thumbSize)
+                ForEach(ticks, id: \.self) { tick in
+                    let x = inset + track * (tick - range.lowerBound) / span
+                    VStack(spacing: 1) {
+                        Capsule()
+                            .fill(theme.foreground.opacity(0.22))
+                            .frame(width: 1, height: 3)
+                        Text(String(format: "%.1f", tick))
+                            .font(.system(size: 9))
+                            .foregroundStyle(theme.secondary.opacity(0.65))
+                            .monospacedDigit()
+                    }
+                    // 首尾两个数字往里收，否则会被裁掉半个
+                    .position(x: min(max(x, 11), width - 11), y: 7)
+                }
+            }
+            .frame(height: 16)
+            .allowsHitTesting(false)
+        }
+        .accessibilityElement()
+        .accessibilityLabel("语速")
+        .accessibilityValue(String(format: "%.1f 倍", value))
+        .accessibilityAdjustableAction { direction in
+            let delta = direction == .increment ? step : -step
+            let next = min(max(value + delta, range.lowerBound), range.upperBound)
+            value = (next * 10).rounded() / 10
+        }
     }
 }

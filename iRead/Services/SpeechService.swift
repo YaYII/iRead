@@ -8,7 +8,7 @@ import os
 ///   内部按句切分做流水线合成：第 N 句在播时，第 N+1 句已在后台合成，避免句间长停顿。
 /// - `.system`：系统 `AVSpeechSynthesizer`，音色可选、资源占用低，作为兜底。
 ///
-/// 对上层（ReaderView）暴露的接口保持一致：`start(text:rate:profile:)`
+/// 对上层（ReaderView）暴露的接口保持一致：`start(text:speed:profile:)`
 /// + `onAdvance` 回调请求下一段内容，形成连续听书。
 ///
 /// 音色由 `VoiceProfile` 三档决定：女声（内置神经）/ 男声（系统）/ 粤语（系统 zh-HK）。
@@ -66,6 +66,9 @@ final class SpeechService: NSObject, ObservableObject {
     // MARK: 本地神经语音播放管线
     private let audioEngine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
+    /// 变速不变调。Piper 原生合成最快只到 2 倍，再往上字就开始糊；
+    /// 2 倍以上交给它拉伸，3x / 4x 才听得清是「快」而不是「糊」。
+    private let timePitch = AVAudioUnitTimePitch()
     private var audioReady = false
     private var pcmFormat: AVAudioFormat?
     /// 本次朗读的句子队列
@@ -81,9 +84,9 @@ final class SpeechService: NSObject, ObservableObject {
     /// 每次朗读递增；旧流水线的回调凭令牌自动失效
     private var runToken = 0
 
+    /// 当前语速**倍率**（0.4～4.0，1.0 为正常）。合成与播放共用这一个值。
     private var currentSpeed: Float = 1.0
     private var currentProfile: VoiceProfile = .neuralFemale
-    private var currentRate: Double = 0.5
 
     override init() {
         super.init()
@@ -179,7 +182,7 @@ final class SpeechService: NSObject, ObservableObject {
     // MARK: - 播放控制
 
     /// 朗读一段文本。已处于听书模式时再次调用会替换当前内容（用于换段/改语速）。
-    func start(text: String, rate: Double, profile: VoiceProfile) {
+    func start(text: String, speed: Double, profile: VoiceProfile) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         activateAudioSession()
         haltPlayback()
@@ -187,7 +190,6 @@ final class SpeechService: NSObject, ObservableObject {
 
         isActive = true
         isPaused = false
-        currentRate = rate
         trace("start -> isActive=true")
 
         guard !trimmed.isEmpty else {
@@ -214,16 +216,16 @@ final class SpeechService: NSObject, ObservableObject {
             if !Self.isPiperAvailable(model) {
                 log.error("piper model \(model.rawValue, privacy: .public) unavailable, falling back to system voice")
                 activeEngine = .system
-                startSystem(text, rate: rate, voice: Self.defaultChineseVoice())
+                startSystem(text, speed: speed, voice: Self.defaultChineseVoice())
                 return
             }
             activeEngine = .piper
-            startPiper(trimmed, rate: rate, model: model)
+            startPiper(trimmed, speed: speed, model: model)
         } else {
             activeEngine = .system
             // 用**未 trim** 的原文：系统语音按字符回调区间，
             // 一旦把段首的换行/全角空格去掉，逐字高亮就会整体左移几个字
-            startSystem(text, rate: rate, voice: Self.voice(for: resolved))
+            startSystem(text, speed: speed, voice: Self.voice(for: resolved))
         }
     }
 
@@ -305,17 +307,19 @@ final class SpeechService: NSObject, ObservableObject {
 
     // MARK: - 系统语音路径
 
-    private func startSystem(_ text: String, rate: Double, voice: AVSpeechSynthesisVoice?) {
+    private func startSystem(_ text: String, speed: Double, voice: AVSpeechSynthesisVoice?) {
         let utterance = AVSpeechUtterance(string: text)
-        utterance.rate = Float(min(max(rate, 0.1), 1.0))
+        // 倍率 → AVSpeechUtterance.rate（0.5 是系统默认语速）。
+        // 注意系统语音的上限就是 1.0（约 2 倍），再快的档位只有内置神经语音给得了。
+        utterance.rate = Float(min(max(speed * 0.5, 0.1), 1.0))
         utterance.pitchMultiplier = 1.0
         // 标点停顿交给系统朗读引擎（它会按逗号/句号自然停顿）
         utterance.postUtteranceDelay = 0.25
         utterance.voice = voice ?? Self.defaultChineseVoice()
         activeUtterance = utterance
         debugCurrentVoiceName = utterance.voice?.name
-        log.notice("system speak \(text.count, privacy: .public) chars voice=\(utterance.voice?.name ?? "-", privacy: .public) lang=\(utterance.voice?.language ?? "-", privacy: .public) rate=\(rate, privacy: .public)")
-        trace("startSystem chars=\(text.count) voice=\(utterance.voice?.name ?? "-") rate=\(rate) isSpeakingBefore=\(synthesizer.isSpeaking)")
+        log.notice("system speak \(text.count, privacy: .public) chars voice=\(utterance.voice?.name ?? "-", privacy: .public) lang=\(utterance.voice?.language ?? "-", privacy: .public) rate=\(utterance.rate, privacy: .public)")
+        trace("startSystem chars=\(text.count) voice=\(utterance.voice?.name ?? "-") rate=\(utterance.rate) isSpeakingBefore=\(synthesizer.isSpeaking)")
         synthesizer.speak(utterance)
         trace("startSystem speak() returned isSpeakingNow=\(synthesizer.isSpeaking)")
         isSpeaking = true
@@ -323,9 +327,9 @@ final class SpeechService: NSObject, ObservableObject {
 
     // MARK: - 本地神经语音路径
 
-    private func startPiper(_ text: String, rate: Double, model: PiperModel) {
-        // 系统语速 0.5 约等于正常语速，映射到 Piper 的 1.0 倍
-        currentSpeed = Float(min(max(rate / 0.5, 0.6), 2.0))
+    private func startPiper(_ text: String, speed: Double, model: PiperModel) {
+        currentSpeed = Float(min(max(speed, 0.4), 4.0))
+        applyPlaybackRate()
         // 逗号处一律切句：男声不切就一口气念完，女声不切则逗号几乎不停顿
         sentences = Self.splitForPiper(text, softBreak: true)
         sentenceRanges = Self.ranges(of: sentences)
@@ -350,7 +354,7 @@ final class SpeechService: NSObject, ObservableObject {
                 guard ok else {
                     self.log.error("piper load failed: \(PiperSynthesizer.shared.errorDescription ?? "-", privacy: .public)")
                     self.activeEngine = .system
-                    self.startSystem(text, rate: rate, voice: Self.defaultChineseVoice())
+                    self.startSystem(text, speed: speed, voice: Self.defaultChineseVoice())
                     return
                 }
                 self.ensureAudioEngine()
@@ -368,7 +372,8 @@ final class SpeechService: NSObject, ObservableObject {
     private func runPipeline(token: Int, model: PiperModel) {
         let queue = sentences
         let ranges = sentenceRanges
-        let speed = currentSpeed
+        // 合成永远按 1.0 倍（音质最好、长度可预测），倍率在播放端拉伸
+        let synthSpeed: Float = 1.0
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
@@ -383,7 +388,7 @@ final class SpeechService: NSObject, ObservableObject {
                     Thread.sleep(forTimeInterval: 0.2)
                 }
                 guard let result = PiperSynthesizer.shared.synthesize(
-                    text: text, speed: speed, model: model, token: token
+                    text: text, speed: synthSpeed, model: model, token: token
                 ) else { continue }
                 let samples = result.samples + Self.trailingSilence(for: text, sampleRate: result.sampleRate)
                 let range = i < ranges.count ? ranges[i] : NSRange(location: 0, length: 0)
@@ -479,6 +484,16 @@ final class SpeechService: NSObject, ObservableObject {
         onAdvance?()
     }
 
+    /// 倍率全部交给 `AVAudioUnitTimePitch`（变速不变调），合成一律按 1.0 倍。
+    ///
+    /// 为什么不用模型自带的 `speed`：实测这个中文模型对 `speed` 几乎不响应 ——
+    /// 同一句话 speed=1.0 出 3.05s 音频，speed=2.0 还有 2.38s（只快 1.28 倍）。
+    /// 拿它当倍率，界面写「2.0x」实际只有 1.3 倍，而且非线性、没法预测。
+    /// 固定 1.0 合成 + 播放端精确拉伸，才是「写多少就是多少」。
+    private func applyPlaybackRate() {
+        timePitch.rate = Float(min(max(Double(currentSpeed), 0.25), 4.0))
+    }
+
     private func ensureAudioEngine() {
         guard !audioReady else {
             if !audioEngine.isRunning { try? audioEngine.start() }
@@ -496,7 +511,10 @@ final class SpeechService: NSObject, ObservableObject {
         }
         pcmFormat = format
         audioEngine.attach(player)
-        audioEngine.connect(player, to: audioEngine.mainMixerNode, format: format)
+        audioEngine.attach(timePitch)
+        audioEngine.connect(player, to: timePitch, format: format)
+        audioEngine.connect(timePitch, to: audioEngine.mainMixerNode, format: format)
+        applyPlaybackRate()
         audioEngine.prepare()
         do {
             try audioEngine.start()

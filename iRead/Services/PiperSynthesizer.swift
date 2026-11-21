@@ -264,7 +264,9 @@ final class PiperSynthesizer {
             guard !trimmed.isEmpty else { return nil }
 
             var gen = SherpaOnnxGenerationConfig()
-            gen.speed = max(0.5, min(2.0, speed))
+            // 调用方（SpeechService）已经把倍率拆成「合成 ≤2 倍 + 播放拉伸」，
+            // 这里只做兜底钳制。下限放到 0.4 是为了支持慢速朗读。
+            gen.speed = max(0.4, min(2.0, speed))
             gen.sid = 0
             gen.silence_scale = 0.2
 

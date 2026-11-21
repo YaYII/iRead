@@ -20,6 +20,7 @@ struct iReadApp: App {
                     Self.runCantoneseControlTestIfRequested()
                     Self.runCantoneseRestartTestIfRequested()
                     Self.runCantonesePipelineTestIfRequested()
+                    Self.runSpeedSelfTestIfRequested()
                     Self.runDownloadSelfTestIfRequested()
                 }
         }
@@ -159,7 +160,7 @@ struct iReadApp: App {
             if index < chunks.count {
                 lines.append("\(stamp()) CALL start #\(index) len=\(chunks[index].count)")
                 flush()
-                svc.start(text: chunks[index], rate: 0.7, profile: .cantonese)
+                svc.start(text: chunks[index], speed: 1.4, profile: .cantonese)
                 lines.append("\(stamp()) AFTER start #\(index) active=\(svc.isActive) engine=\(svc.activeEngine.rawValue)")
                 flush()
             } else {
@@ -179,7 +180,7 @@ struct iReadApp: App {
 
         // 先把可能残留的听书会话清掉，排除「别的东西抢占播放」的干扰（必须在 start 之前）
         ListeningCenter.shared.stop()
-        svc.start(text: chunks[0], rate: 0.7, profile: .cantonese)
+        svc.start(text: chunks[0], speed: 1.4, profile: .cantonese)
         lines.append("\(stamp()) START engine=\(svc.activeEngine.rawValue) voice=\(svc.debugCurrentVoiceName ?? "-")")
         flush()
 
@@ -233,7 +234,7 @@ struct iReadApp: App {
             lines.append("\(stamp()) ADVANCE (unexpected in control test)")
             flush()
         }
-        svc.start(text: text, rate: 0.5, profile: .cantonese)
+        svc.start(text: text, speed: 1.0, profile: .cantonese)
         lines.append("\(stamp()) START \(svc.debugSynthesizerState)")
         flush()
 
@@ -255,8 +256,8 @@ struct iReadApp: App {
                 lines.append("\(stamp()) >>> resume()  (暂停已持续 \((tick - pausedAt) / 2)s)")
                 svc.resume()
             case 22:  // +11s：暂停中改语速，看是否会重新起
-                lines.append("\(stamp()) >>> rate 0.5 -> 0.4 (paused=\(svc.isPaused))")
-                ReaderSettings.shared.speechRate = 0.4
+                lines.append("\(stamp()) >>> speed 1.0 -> 0.8 (paused=\(svc.isPaused))")
+                ReaderSettings.shared.speechSpeed = 0.8
             case 30:  // +15s：收尾
                 lines.append("\(stamp()) >>> stop()")
                 svc.stop()
@@ -297,7 +298,7 @@ struct iReadApp: App {
             lines.append("\(stamp()) ⚠️ onAdvance 被触发 #\(spuriousAdvances)（打断重播时不该发生）")
             flush()
         }
-        svc.start(text: String(repeating: paragraph, count: 3), rate: 0.5, profile: .cantonese)
+        svc.start(text: String(repeating: paragraph, count: 3), speed: 1.0, profile: .cantonese)
         lines.append("\(stamp()) START #0 rate=0.5 \(svc.debugSynthesizerState)")
         flush()
 
@@ -315,7 +316,7 @@ struct iReadApp: App {
             if tick == 8 || tick == 16 || tick == 24 {
                 round += 1
                 lines.append("\(stamp()) >>> RESTART #\(round) (rangeBefore=\(range) frozen=\(frozen))")
-                svc.start(text: String(repeating: paragraph, count: 3), rate: 0.4, profile: .cantonese)
+                svc.start(text: String(repeating: paragraph, count: 3), speed: 0.8, profile: .cantonese)
                 marks.append((tick, range))
                 frozen = 0
                 lines.append("\(stamp()) after start #\(round) \(svc.debugSynthesizerState) active=\(svc.isActive)")
@@ -353,7 +354,7 @@ struct iReadApp: App {
         }
 
         settings.voiceProfile = .cantonese
-        settings.speechRate = 0.5
+        settings.speechSpeed = 1.0
 
         // 等内置书灌进书架再开播
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
@@ -398,8 +399,8 @@ struct iReadApp: App {
                     lines.append(snap(">>> toggle() 暂停"))
                     listening.toggle()
                 case 12: // +6s：暂停中改语速
-                    lines.append("\(stamp()) >>> 暂停中改语速 0.5 -> 0.35")
-                    settings.speechRate = 0.35
+                    lines.append("\(stamp()) >>> 暂停中改语速 1.0 -> 0.7")
+                    settings.speechSpeed = 0.7
                 case 18: // +9s：点继续（应按新语速从当前句重来）
                     lines.append(snap(">>> toggle() 继续"))
                     listening.toggle()
@@ -423,6 +424,83 @@ struct iReadApp: App {
                 flush()
             }
         }
+    }
+
+    /// 自检：`--speed-selftest` 用内置女声依次以 1.0x / 2.0x / 4.0x 念同一段话，
+    /// 记下每档**实际耗时**。
+    ///
+    /// 要验证的是「合成封顶 2 倍 + `AVAudioUnitTimePitch` 拉伸」这条路真的能到 4 倍：
+    /// 如果 4.0x 的耗时约等于 1.0x 的 1/4，说明拉伸生效、而且播放回调也跟着加速了
+    /// （高亮不会掉队）；如果耗时几乎没变，说明 timePitch 没接进图里。
+    /// 结果落盘 `Documents/speed-selftest.txt`。
+    private static func runSpeedSelfTestIfRequested() {
+        guard ProcessInfo.processInfo.arguments.contains("--speed-selftest") else { return }
+        let svc = SpeechService.shared
+        // 只用**一句**：多句的话总耗时会被逐句合成的 CPU 时间盖住，量不出播放倍率。
+        // 第一档 1.0x 当预热（模型首次加载要几秒），不计入对比。
+        let text = "夜色沉下来，城市的灯一盏一盏亮起。"
+        let speeds: [Double] = [1.0, 1.0, 2.0, 4.0]
+
+        var index = 0
+        var lines: [String] = []
+        var legStart = Date()
+        let started = Date()
+        func stamp() -> String { String(format: "+%.1fs", Date().timeIntervalSince(started)) }
+        func flush() { writeDebugFile(lines.joined(separator: "\n"), name: "speed-selftest.txt") }
+
+        // 别让听书会话抢播放
+        ListeningCenter.shared.stop()
+        lines.append("textLen=\(text.count) speeds=\(speeds)")
+        flush()
+
+        // 先量一下模型对 speed 的响应：同样的文字，speed 越大音频应该越短。
+        // 这一步是「播放倍率对不上」时的第一手证据。
+        DispatchQueue.global(qos: .userInitiated).async {
+            let piper = PiperSynthesizer.shared
+            guard piper.loadIfNeeded(.female) else {
+                lines.append("synth sweep: model load failed")
+                flush()
+                return
+            }
+            let token = piper.currentToken()
+            for s in [1.0, 1.5, 2.0] as [Float] {
+                let t0 = Date()
+                if let r = piper.synthesize(text: text, speed: s, model: .female, token: token) {
+                    let sec = Double(r.samples.count) / Double(r.sampleRate)
+                    lines.append(String(format: "synth sweep speed=%.1f audio=%.2fs cost=%.2fs",
+                                        s, sec, Date().timeIntervalSince(t0)))
+                } else {
+                    lines.append(String(format: "synth sweep speed=%.1f FAILED", s))
+                }
+                flush()
+            }
+        }
+
+        func playNext() {
+            guard index < speeds.count else {
+                lines.append("\(stamp()) ALL DONE")
+                flush()
+                svc.stop()
+                return
+            }
+            let speed = speeds[index]
+            lines.append("\(stamp()) >>> \(speed)x begin")
+            flush()
+            legStart = Date()
+            svc.start(text: text, speed: speed, profile: .neuralFemale)
+        }
+
+        svc.onAdvance = {
+            let elapsed = Date().timeIntervalSince(legStart)
+            lines.append(String(format: "%.1fs <<< %@x done elapsed=%.2fs engine=%@",
+                                Date().timeIntervalSince(started), "\(speeds[index])",
+                                elapsed, svc.activeEngine.rawValue))
+            flush()
+            index += 1
+            playNext()
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { playNext() }
     }
 
     /// 把调试输出写到 Documents/，真机可通过 devicectl 取回
@@ -512,7 +590,7 @@ struct iReadApp: App {
                 print("[SelfTest] start playback via SpeechService (male)")
                 svc.start(
                     text: "播放链路测试，听得到就说明本地语音已经接通。",
-                    rate: 0.5,
+                    speed: 1.0,
                     profile: .neuralMale
                 )
             }

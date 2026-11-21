@@ -18,6 +18,7 @@ final class ReaderSettings: ObservableObject {
         static let keepScreenOn = "iRead.setting.keepScreenOn"
         static let brightness = "iRead.setting.brightness"
         static let speechRate = "iRead.setting.speechRate"
+        static let speechSpeed = "iRead.setting.speechSpeed"
         static let speechVoiceID = "iRead.setting.speechVoiceID"
         static let speechEngine = "iRead.setting.speechEngine"
         static let voiceProfile = "iRead.setting.voiceProfile"
@@ -39,9 +40,12 @@ final class ReaderSettings: ObservableObject {
             applyBrightness()
         }
     }
-    /// 听书语速，AVSpeechUtterance.rate，0.5 为系统默认（约等于 1 倍速）
-    @Published var speechRate: Double {
-        didSet { defaults.set(speechRate, forKey: Key.speechRate) }
+    /// 听书语速**倍率**（1.0 = 正常，番茄那种 0.4x～4.0x）。
+    ///
+    /// 以前这里存的是 `AVSpeechUtterance.rate`（0.5 = 正常），和界面上显示的
+    /// 「1.0x」差一倍，改起来容易错。现在统一用倍率，换算交给 `SpeechService`。
+    @Published var speechSpeed: Double {
+        didSet { defaults.set(speechSpeed, forKey: Key.speechSpeed) }
     }
     /// 听书音色标识，空串表示系统默认中文音色
     @Published var speechVoiceID: String {
@@ -78,7 +82,15 @@ final class ReaderSettings: ObservableObject {
         firstLineIndent = d.object(forKey: Key.firstLineIndent) as? Bool ?? true
         keepScreenOn = d.object(forKey: Key.keepScreenOn) as? Bool ?? true
         brightness = d.object(forKey: Key.brightness) as? Double ?? 0.8
-        speechRate = d.object(forKey: Key.speechRate) as? Double ?? 0.5
+        // 语速：优先读新键（倍率）。老版本存的是 AVSpeechUtterance.rate（0.5 = 1 倍），
+        // 乘 2 换成倍率，升级后听感不变。
+        if let speed = d.object(forKey: Key.speechSpeed) as? Double {
+            speechSpeed = speed
+        } else if let legacyRate = d.object(forKey: Key.speechRate) as? Double {
+            speechSpeed = legacyRate * 2
+        } else {
+            speechSpeed = 1.0
+        }
         speechVoiceID = d.string(forKey: Key.speechVoiceID) ?? ""
         let engine = SpeechEngineKind(rawValue: d.string(forKey: Key.speechEngine) ?? "") ?? .piper
         speechEngine = engine
@@ -115,7 +127,7 @@ final class ReaderSettings: ObservableObject {
         firstLineIndent = true
         keepScreenOn = true
         brightness = 0.8
-        speechRate = 0.5
+        speechSpeed = 1.0
         speechVoiceID = ""
         speechEngine = .piper
         voiceProfile = .neuralFemale

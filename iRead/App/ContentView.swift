@@ -90,6 +90,16 @@ struct ContentView: View {
             let args = ProcessInfo.processInfo.arguments
             // --night：截图时强制夜间主题（任何入口都生效）
             if args.contains("--night") { settings.theme = .night }
+            // --speed 1.7：截图时指定语速（0.4～4.0）
+            if let i = args.firstIndex(of: "--speed"), i + 1 < args.count,
+               let v = Double(args[i + 1]) {
+                settings.speechSpeed = min(max(v, 0.4), 4.0)
+            }
+            // --theme paper|sepia|green|night：截图时指定主题
+            if let i = args.firstIndex(of: "--theme"), i + 1 < args.count,
+               let t = ReadingTheme(rawValue: args[i + 1]) {
+                settings.theme = t
+            }
             // --debug-wifi：直接打开 WiFi 传书页（自测/自动化用）
             if args.contains("--debug-wifi") {
                 showWiFiTransfer = true

@@ -132,7 +132,7 @@ final class ListeningCenter: ObservableObject {
 
         // 语速 / 音色在播放中调整：从当前这句重读，别回到本章开头。
         // 拖滑块会连续触发，debounce 一下避免反复掐断音频。
-        settings.$speechRate
+        settings.$speechSpeed
             .dropFirst()
             .debounce(for: .milliseconds(350), scheduler: DispatchQueue.main)
             .sink { [weak self] _ in self?.restartCurrentSentence() }
@@ -415,7 +415,7 @@ final class ListeningCenter: ObservableObject {
             }
             self.speakNextChunk()
         }
-        speech.start(text: chunk, rate: settings.speechRate, profile: settings.voiceProfile)
+        speech.start(text: chunk, speed: settings.speechSpeed, profile: settings.voiceProfile)
         log.notice("chunk ch=\(self.chapterIndex, privacy: .public) start=\(start, privacy: .public) next=\(next, privacy: .public)")
         updateNowPlaying()
     }
@@ -454,7 +454,7 @@ final class ListeningCenter: ObservableObject {
         }
         let chapter = chapterIndex
         let char = sentenceStart
-        log.notice("restart sentence=\(char, privacy: .public) rate=\(self.settings.speechRate, privacy: .public) voice=\(self.settings.voiceProfile.rawValue, privacy: .public)")
+        log.notice("restart sentence=\(char, privacy: .public) speed=\(self.settings.speechSpeed, privacy: .public) voice=\(self.settings.voiceProfile.rawValue, privacy: .public)")
         play(bookID: bookID!, chapter: chapter, char: char)
     }
 
