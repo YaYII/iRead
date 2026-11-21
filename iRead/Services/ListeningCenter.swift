@@ -56,15 +56,10 @@ final class ListeningCenter: ObservableObject {
     /// 这是**持久状态**而非一次性标志：sheet 收起 + fullScreenCover 重建时
     /// SwiftUI 可能多次创建 ReaderView，一次性标志会被第一个实例吃掉。
     @Published private(set) var isFollowAlong = false
-    /// 进入跟读前的阅读位置，供「原进度」一键回去
-    @Published private(set) var followOriginalChapter = 0
-    @Published private(set) var followOriginalChar = 0
-    private var followOriginSaved = false
 
     /// 「边听边读」：关掉播放器，打开真正的阅读界面并跟随朗读
     func requestFollowAlong(bookID id: String) {
         isFollowAlong = true
-        followOriginSaved = false
         readerRequest = id
     }
 
@@ -73,19 +68,11 @@ final class ListeningCenter: ObservableObject {
         return readerRequest
     }
 
-    /// 只记第一次进入跟读时的阅读进度；视图重复 prepare 不覆盖
-    func saveFollowOrigin(chapter: Int, char: Int) {
-        guard !followOriginSaved else { return }
-        followOriginSaved = true
-        followOriginalChapter = chapter
-        followOriginalChar = char
-    }
-
-    /// 点「原进度」退出跟读
+    /// 退出跟读（听书停止 / 读完时调用）
     func endFollowAlong() {
         isFollowAlong = false
-        followOriginSaved = false
     }
+
     /// 本章剩余进度（播放器进度条用）
     var overallProgress: Double {
         guard chapterCount > 0 else { return 0 }
@@ -105,6 +92,10 @@ final class ListeningCenter: ObservableObject {
     private var base = 0
     /// 当前正在念的句子在章内的起点：改语速/音色后从这里重读
     private var sentenceStart = 0
+    /// 暂停期间改过语速/音色，等继续时再生效
+    private var pendingSettingsRestart = false
+    /// 两段之间的空档里按了暂停：下一段先别念，等继续时再补上
+    private var pendingChunk = false
     private var bag = Set<AnyCancellable>()
 
     private init() {
@@ -254,15 +245,37 @@ final class ListeningCenter: ObservableObject {
 
     func pause() { speech.pause() ; updateNowPlaying() }
 
-    func resumePlayback() { speech.resume(); updateNowPlaying() }
+    func resumePlayback() {
+        // 暂停期间改过语速/音色：按新设置从当前这句重来，而不是接着用旧语速念
+        if pendingSettingsRestart, let id = bookID, isActive {
+            pendingSettingsRestart = false
+            pendingChunk = false
+            play(bookID: id, chapter: chapterIndex, char: sentenceStart)
+            updateNowPlaying()
+            return
+        }
+        speech.resume()
+        // 暂停按在两段之间的空档里：上一段其实已经念完了，continueSpeaking 接不上，
+        // 这里补念下一段（start 内部会先 halt，不会和残留音频叠在一起）
+        if pendingChunk, isActive, bookID != nil {
+            pendingChunk = false
+            speakNextChunk()
+        }
+        updateNowPlaying()
+    }
 
     func toggle() {
         guard speech.isActive else {
             start()
             return
         }
-        speech.toggle()
-        updateNowPlaying()
+        // 必须走自己的 pause()/resumePlayback()：直接调 speech.toggle() 会绕开
+        // 「暂停期间改的语速/音色」和「空档里按下的暂停」，这两笔账都要在恢复时还上
+        if isPaused {
+            resumePlayback()
+        } else {
+            pause()
+        }
     }
 
     /// 彻底退出听书：迷你条消失，但朗读记录保留，下次还能接着听
@@ -392,7 +405,16 @@ final class ListeningCenter: ObservableObject {
         base = start
         chapterProgress = Double(start) / Double(max(1, text.length))
 
-        speech.onAdvance = { [weak self] in self?.speakNextChunk() }
+        speech.onAdvance = { [weak self] in
+            guard let self else { return }
+            // 上一段念完时用户其实是暂停状态（按在两段之间的空档里）：
+            // 先别开下一段，否则「暂停」这键就被下一段吞了
+            if self.isPaused {
+                self.pendingChunk = true
+                return
+            }
+            self.speakNextChunk()
+        }
         speech.start(text: chunk, rate: settings.speechRate, profile: settings.voiceProfile)
         log.notice("chunk ch=\(self.chapterIndex, privacy: .public) start=\(start, privacy: .public) next=\(next, privacy: .public)")
         updateNowPlaying()
@@ -416,12 +438,20 @@ final class ListeningCenter: ObservableObject {
 
     private func halt() {
         speech.onAdvance = nil
+        pendingSettingsRestart = false
+        pendingChunk = false
         speech.stop()
     }
 
-    /// 语速/音色变化：只重读当前这句
+    /// 语速/音色变化：只重读当前这句。
+    /// 暂停中改了设置不能立即重读（会突然出声），先记下来等「继续」时按新设置从这句起。
     private func restartCurrentSentence() {
-        guard bookID != nil, isActive, !isPaused else { return }
+        guard bookID != nil, isActive else { return }
+        if isPaused {
+            pendingSettingsRestart = true
+            log.notice("settings changed while paused, will restart on resume")
+            return
+        }
         let chapter = chapterIndex
         let char = sentenceStart
         log.notice("restart sentence=\(char, privacy: .public) rate=\(self.settings.speechRate, privacy: .public) voice=\(self.settings.voiceProfile.rawValue, privacy: .public)")

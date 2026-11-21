@@ -199,7 +199,7 @@ struct ReaderView: View {
                     .zIndex(4)
                 }
 
-                // 跟读模式下换成番茄式「原进度 / 从本页听」条，
+                // 跟读模式下换成番茄式「返回 / 从本页听」条，
                 // 其余时候是「听」球 / 播放胶囊（两者互斥）。
                 if !showSettings {
                     if followMode {
@@ -217,6 +217,17 @@ struct ReaderView: View {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                         .zIndex(3)
                     }
+                }
+
+                // 正在听这本、但把正文滑到别处看时，浮出「回到朗读位置」。
+                // 跟读模式下跟读条自带「返回」，不重复占地方；
+                // 这里只服务「从书架打开、右下是播放胶囊」的场景。
+                if isAwayFromSpeech, !followMode, !showSettings {
+                    returnToSpeechButton
+                        .padding(.bottom, (showChrome ? 78 : 24) + 52)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .zIndex(3)
                 }
 
                 // 护眼滤镜：一层极淡的暖色，降低蓝光又不至于糊掉文字
@@ -240,6 +251,33 @@ struct ReaderView: View {
                     try? await Task.sleep(nanoseconds: 4_000_000_000)
                     scrollProxy.simulateUserScroll(by: 600)
                 }
+                // 仅供自测：滑开后再自动点一次「回到朗读位置」，验证能回到朗读处
+                if ProcessInfo.processInfo.arguments.contains("--return-to-speech") {
+                    try? await Task.sleep(nanoseconds: 7_000_000_000)
+                    if isAwayFromSpeech { returnToSpeechPosition() }
+                }
+                // 仅供自测：跟读态下打开听书界面，验证 top bar 耳机走的是同一个入口
+                if ProcessInfo.processInfo.arguments.contains("--open-player") {
+                    try? await Task.sleep(nanoseconds: 9_000_000_000)
+                    openPlayer()
+                }
+                // 仅供自测：听书中途跳章，验证朗读不跟着跳、也不自动开播
+                if ProcessInfo.processInfo.arguments.contains("--jump-chapter") {
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    let target = min(max(0, content.chapterCount - 1), chapterIndex + 2)
+                    jump(toChapter: target, char: 0)
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    #if DEBUG
+                    print("[Reader] jump-chapter → \(scrollProxy.chapter)/\(scrollProxy.characterIndex) following=\(scrollProxy.isFollowingSpeech) speechCh=\(listening.spokenChapter) playing=\(listening.isActive)")
+                    #endif
+                    if ProcessInfo.processInfo.arguments.contains("--listen-from-here") {
+                        listenFromHere()
+                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        #if DEBUG
+                        print("[Reader] listen-from-here → \(scrollProxy.chapter)/\(scrollProxy.characterIndex) following=\(scrollProxy.isFollowingSpeech) speechCh=\(listening.spokenChapter) playing=\(listening.isActive)")
+                        #endif
+                    }
+                }
                 // 仅供自测：听书过程中改字号，验证不会重读
                 if ProcessInfo.processInfo.arguments.contains("--font-bump") {
                     try? await Task.sleep(nanoseconds: 6_000_000_000)
@@ -253,6 +291,7 @@ struct ReaderView: View {
         .background(theme.background.ignoresSafeArea())
         .animation(.easeInOut(duration: 0.2), value: showChrome)
         .animation(.easeInOut(duration: 0.22), value: showSettings)
+        .animation(.easeInOut(duration: 0.2), value: isAwayFromSpeech)
     }
 
     // MARK: - 连续滚动
@@ -397,29 +436,72 @@ struct ReaderView: View {
         listening.bookID == bookID && listening.isActive
     }
 
+    /// 正在听这本、但视口已经不跟着朗读了（用户滑到别处浏览）。
+    /// 这才是需要「回到朗读位置」的时刻；跟随中不占地方。
+    /// 暂停时 `isActive` 仍为真，所以暂停后滑开也能一键回到刚才读到的位置。
+    private var isAwayFromSpeech: Bool {
+        isListeningThisBook && content != nil && !scrollProxy.isFollowingSpeech
+    }
+
+    /// 浮出的回头路：回到正在朗读的那一句。
+    /// 跟读模式下不显示（跟读条自带「返回」），只在播放胶囊那一侧补位。
+    private var returnToSpeechButton: some View {
+        Button {
+            returnToSpeechPosition()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "headphones")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("回到朗读位置")
+                    .font(.caption.weight(.medium))
+            }
+            .foregroundStyle(theme.background)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(Capsule().fill(theme.accent))
+            .shadow(color: .black.opacity(0.20), radius: 9, y: 3)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("回到正在朗读的位置")
+    }
+
     // MARK: - 边听边读：阅读页跟读
 
     /// 跟读条：居中浮在正文上，与右下「听」球 / 播放胶囊互斥。
-    /// 「原进度」回进入跟读前的阅读位置；「从本页听」把朗读起点挪到当前这一页。
+    /// 「返回」滚回正在朗读的那一句并恢复跟随；「听书」回到听书界面（调语速/换音色/换书）；
+    /// 「从本页听」把朗读起点挪到当前这一页。
+    /// 跟读态会把右下角那颗「听」球顶掉，所以这里必须自己留一个进播放器的口子，
+    /// 否则用户只能去顶栏找那个小耳机。
     private var followBar: some View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
             HStack(spacing: 0) {
                 Button {
-                    returnToOriginalProgress()
+                    returnToSpeechPosition()
                 } label: {
-                    Label("原进度", systemImage: "arrow.uturn.backward")
+                    Label("返回", systemImage: "arrow.uturn.backward")
                         .font(.caption.weight(.medium))
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("回到原阅读进度")
+                .accessibilityLabel("返回到正在朗读的位置")
+
+                separator
+
+                Button {
+                    openPlayer()
+                } label: {
+                    Label("听书", systemImage: "headphones")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("回到听书界面")
 
                 separator
 
                 Button {
                     listenFromHere()
                 } label: {
-                    Label("从本页听", systemImage: "headphones")
+                    Label("从本页听", systemImage: "speaker.wave.2")
                         .font(.caption.weight(.medium))
                 }
                 .buttonStyle(.plain)
@@ -453,16 +535,10 @@ struct ReaderView: View {
             .padding(.horizontal, 10)
     }
 
-    /// 从听书组件点「边听边读」进来：记住原阅读进度，落到朗读位置并恢复自动跟随。
+    /// 从听书组件点「边听边读」进来：落到朗读位置并恢复自动跟随。
     /// 之后朗读每换一句，`syncListeningHighlight` 的 `ensureVisible` 会把视口带过去。
     private func enterFollowMode() {
         guard let content else { return }
-        // 只记第一次：别把原进度覆盖成朗读位置。
-        // 用 scrollProxy 的实时视口坐标，而不是排版锚点 —— 用户可能已经滑过几屏。
-        ListeningCenter.shared.saveFollowOrigin(
-            chapter: scrollProxy.chapter,
-            char: scrollProxy.characterIndex
-        )
         let ch = min(max(0, listening.spokenChapter), max(0, content.chapterCount - 1))
         let length = content.chapterText(at: ch).length
         let char = min(max(0, listening.currentChar), max(0, length - 1))
@@ -475,22 +551,43 @@ struct ReaderView: View {
         refreshToken = UUID()
         syncListeningHighlight()
         #if DEBUG
-        print("[Reader] follow-along ch=\(ch) char=\(char) origin=\(listening.followOriginalChapter)/\(listening.followOriginalChar)")
+        print("[Reader] follow-along ch=\(ch) char=\(char)")
         #endif
     }
 
-    /// 回原进度：退出跟读、交出跟随控制权。听书本身继续播，不受影响。
-    private func returnToOriginalProgress() {
-        let chapter = listening.followOriginalChapter
-        let char = listening.followOriginalChar
-        ListeningCenter.shared.endFollowAlong()
-        scrollProxy.pauseFollowing()
+    /// 回到朗读位置：把视口带回**正在念的那一句**，并恢复自动跟随。
+    ///
+    /// 定位只认听书游标（`spokenChapter` / `spokenRange`），不认阅读进度 ——
+    /// 用户滑走浏览过别处，阅读进度已经被带到了新位置，用它就回不来了。
+    /// 声音一直没停，这里只挪「眼睛」，不重读、不打断。
+    private func returnToSpeechPosition() {
+        guard let target = jumpToSpeechAnchor() else { return }
+        // 先发起滚动、随即收回跟随权：这样滚动期间若恰好换句，
+        // ensureVisible 只会在目标位置附近做微调，不会插一脚把动画打断到别处。
+        scrollProxy.returnToSpeech(chapter: target.chapter, char: target.char)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        #if DEBUG
+        print("[Reader] return-to-speech ch=\(target.chapter) char=\(target.char)")
+        #endif
+    }
+
+    /// 把排版锚点和当前视口都对准听书游标（不滚动、不改朗读进度）。
+    /// 打开正在听的书、点「回到朗读位置」都走这里。
+    @discardableResult
+    private func jumpToSpeechAnchor() -> (chapter: Int, char: Int)? {
+        guard let content, listening.bookID == bookID else { return nil }
+        let chapter = min(max(0, listening.spokenChapter), max(0, content.chapterCount - 1))
+        let length = content.chapterText(at: chapter).length
+        let anchor = listening.spokenRange?.location ?? listening.currentChar
+        let char = min(max(0, anchor), length)
+
         chapterIndex = chapter
         scrollAnchorChapter = chapter
         scrollAnchorChar = char
         scrollProxy.chapter = chapter
         scrollProxy.characterIndex = char
-        refreshToken = UUID()
+        speechHighlight = listening.spokenRange
+        return (chapter, char)
     }
 
     /// 从当前这一页开始听：把听书游标挪到视口位置，再继续跟读
@@ -558,6 +655,10 @@ struct ReaderView: View {
     }
 
     /// 跳章 / 跳书签：把锚点挪到目标位置，让滚动容器重建窗口并定位过去。
+    ///
+    /// **只动阅读，绝不碰朗读。** 听书是听书，阅读是阅读：
+    /// 想从这一章接着念，用户自己按跟读条上的「从本页听」；
+    /// 跳一下章就自动开播（或者偷偷改掉朗读游标）是把两件事搅在一起。
     private func jump(toChapter chapter: Int, char: Int) {
         guard let content else { return }
         let target = min(max(0, chapter), max(0, content.chapterCount - 1))
@@ -569,22 +670,16 @@ struct ReaderView: View {
         scrollAnchorChar = offset
         scrollProxy.chapter = target
         scrollProxy.characterIndex = offset
+        // 目标章可能已经在加载窗口里 —— 那种情况下 updateUIView 的 configure
+        // 只做 relayout、不会滚动，所以这里显式滚一次，别让跳章静默失效。
+        scrollProxy.scroll(toChapter: target, char: offset, animated: false)
+        // 视口已经离开朗读位置了，把跟随权交还用户：
+        // 否则下一句朗读的 ensureVisible 会把页面整个拽回原来的章节。
+        scrollProxy.releaseFollowing()
         speechHighlight = nil
         showChapters = false
         showBookmarks = false
         persistScrollProgress(chapter: target, charIndex: offset, throttled: false)
-
-        // 只在「正在听的就是这本书」时把朗读带过来。
-        // 听 A 看 B 时，在 B 里跳章绝不能动 A 的播放位置。
-        if listening.bookID == bookID {
-            if listening.isActive {
-                // 正在听这本：朗读跟着换地方，别一边显示新章节一边念旧位置。
-                listening.play(bookID: bookID, chapter: target, char: offset, snapToParagraph: false)
-            } else {
-                // 暂停中：同步朗读记录，下次播从这儿起
-                store.setSpeechPosition(bookID: bookID, chapter: target, char: offset)
-            }
-        }
     }
 
     private func toggleBookmark() {
@@ -663,10 +758,18 @@ struct ReaderView: View {
         if args.contains("--panel") { showSettings = true }
         if args.contains("--eyecare") { settings.eyeCare = true }
         // 从听书组件点「边听边读」进来：阅读页从朗读位置开始跟读
-        if followMode { enterFollowMode() }
+        if followMode {
+            enterFollowMode()
+        } else if listening.isActive, listening.bookID == bookID {
+            // 正在听这本、直接从书架打开：先落在**正在念的位置**，
+            // 而不是上次的阅读进度 —— 听书位置是「正在发生」的，比历史进度更新。
+            // 之后手动滑走，浮出的「回到朗读位置」随时能把视口带回来。
+            jumpToSpeechAnchor()
+        }
         #if DEBUG
-        // 自测：统计 prepare 次数，用来确认「阅读器已启动」时没有重新唤起
-        print("[Reader] prepare book=\(bookID.prefix(6)) follow=\(followMode)")
+        // 自测：统计 prepare 次数，确认「阅读器已启动」时没有重新唤起；
+        // 同时打印锚点与听书游标，验证打开正在听的书时落在朗读位置
+        print("[Reader] prepare book=\(bookID.prefix(6)) follow=\(followMode) anchor=\(scrollAnchorChapter)/\(scrollAnchorChar) speech=\(listening.bookID == bookID ? "\(listening.spokenChapter)/\(listening.currentChar)" : "-")")
         #endif
     }
 }

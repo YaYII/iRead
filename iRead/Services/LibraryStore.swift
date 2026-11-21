@@ -122,6 +122,86 @@ final class LibraryStore: ObservableObject {
         return book
     }
 
+    // MARK: - 流式入库（边下边读）
+
+    /// 下载一开始就先建一本占位书进书架：这样用户立刻能点开，
+    /// 后续抓到的章节逐章追加进去，做到「下几章读几章」。
+    /// - Returns: 这本书的 id，后续 appendChunk 用它定位。
+    @discardableResult
+    func createStreamingBook(
+        title: String,
+        author: String = "",
+        totalChapters: Int,
+        source: String
+    ) -> Book {
+        let id = UUID().uuidString
+        let fileName = "\(id).txt"
+        // 先写一行书名占位，TextParser 至少能解析出「正文」一节，打开不会空白
+        let seed = "\(title)\n\n"
+        try? (seed.data(using: .utf8) ?? Data()).write(to: booksDir.appendingPathComponent(fileName))
+        let book = Book(
+            id: id,
+            title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未命名书籍" : title,
+            author: author,
+            fileName: fileName,
+            addedAt: Date(),
+            lastReadAt: nil,
+            chapterCount: 0,
+            fileSize: Int64(seed.utf8.count),
+            lastChapterIndex: 0,
+            progress: 0,
+            coverHue: Double(books.count % 8) / 8.0 + 0.04,
+            isPinned: false,
+            isFinished: false,
+            source: source
+        )
+        var list = books
+        list.insert(book, at: 0)
+        books = list
+        cache[book.id] = nil
+        save()
+        return book
+    }
+
+    /// 把一批已抓到的章节追加进占位书，并立即刷新书架/阅读器。
+    /// 每章写成「标题 + 正文」，TextParser 下次打开会按「第X章」重新切目录。
+    func appendChapters(to bookID: String, chapters: [(title: String, text: String)]) {
+        guard let book = self.book(bookID), !chapters.isEmpty else { return }
+        let url = booksDir.appendingPathComponent(book.fileName)
+        var existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        var addedBytes = 0
+        for chapter in chapters {
+            let block = "\(chapter.title)\n\n\(chapter.text)\n\n"
+            existing += block
+            addedBytes += block.utf8.count
+        }
+        guard let data = existing.data(using: .utf8) else { return }
+        try? data.write(to: url, options: .atomic)
+
+        // 清掉这本书的正文缓存，阅读器下次进入会重新解析出新增章节
+        cache[bookID] = nil
+        let parsed = TextParser.parse(data)
+        mutate(bookID) {
+            $0.chapterCount = parsed.chapters.count
+            $0.fileSize = Int64(data.count)
+        }
+    }
+
+    /// 下载结束（完成/失败/取消）后，用最终章节数校正元数据。
+    func finalizeStreamingBook(bookID: String, expectedChapters: Int) {
+        guard let book = self.book(bookID) else { return }
+        let url = booksDir.appendingPathComponent(book.fileName)
+        guard let data = try? Data(contentsOf: url) else { return }
+        let parsed = TextParser.parse(data)
+        cache[bookID] = nil
+        mutate(bookID) {
+            // 抓到的章数可能少于预期（锁章被跳过），以实际落盘为准
+            $0.chapterCount = parsed.chapters.count
+            $0.fileSize = Int64(data.count)
+        }
+        _ = expectedChapters
+    }
+
     func delete(book: Book) {
         var list = books
         list.removeAll { $0.id == book.id }

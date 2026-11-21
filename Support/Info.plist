@@ -10,5 +10,11 @@
 	<!-- WiFi 传书：仅在本机监听局域网，供用户从电脑传自己的 TXT -->
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>用于在同一 WiFi 下从电脑向 iRead 传书。服务只在本机监听，不扫描或连接其它设备。</string>
+	<!-- 网络书源：允许访问用户导入的书源站点（含部分仅 HTTP 的公版书站） -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

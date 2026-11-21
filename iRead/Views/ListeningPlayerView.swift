@@ -468,7 +468,7 @@ struct ListeningPlayerView: View {
     }
 
     /// 边听边读入口：打开**真正的阅读界面**，不是听书组件里的第二个正文视图。
-    /// 阅读页会从朗读位置开始跟读，并自带「原进度 / 从本页听」。
+    /// 阅读页会从朗读位置开始跟读，滑走了还能一键回到朗读位置。
     private var readAlongRow: some View {
         Button {
             guard let id = listening.bookID else { return }
@@ -483,7 +483,7 @@ struct ListeningPlayerView: View {
                     Text("边听边读")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(theme.foreground)
-                    Text("打开阅读界面跟随朗读，可一键回原进度")
+                    Text("跟随朗读，滑到别处也能一键回到朗读位置")
                         .font(.caption2)
                         .foregroundStyle(theme.secondary)
                 }

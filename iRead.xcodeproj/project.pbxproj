@@ -10,6 +10,7 @@
 		1A1B2C3D0000000000000011 /* SherpaOnnxC.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1A1B2C3D0000000000000010 /* SherpaOnnxC.xcframework */; };
 		1A1B2C3D0000000000000013 /* piper in Resources */ = {isa = PBXBuildFile; fileRef = 1A1B2C3D0000000000000012 /* piper */; };
 		1A1B2C3D0000000000000015 /* SherpaOnnxC.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1A1B2C3D0000000000000010 /* SherpaOnnxC.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		1A1B2C3D0000000000000021 /* booklists in Resources */ = {isa = PBXBuildFile; fileRef = 1A1B2C3D0000000000000020 /* booklists */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -30,6 +31,7 @@
 		1A1B2C3D0000000000000001 /* iRead.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = iRead.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A1B2C3D0000000000000010 /* SherpaOnnxC.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = SherpaOnnxC.xcframework; path = Vendor/SherpaOnnxC.xcframework; sourceTree = "<group>"; };
 		1A1B2C3D0000000000000012 /* piper */ = {isa = PBXFileReference; lastKnownFileType = folder; name = piper; path = Vendor/piper; sourceTree = "<group>"; };
+		1A1B2C3D0000000000000020 /* booklists */ = {isa = PBXFileReference; lastKnownFileType = folder; name = booklists; path = Vendor/booklists; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -70,6 +72,7 @@
 			children = (
 				1A1B2C3D0000000000000010 /* SherpaOnnxC.xcframework */,
 				1A1B2C3D0000000000000012 /* piper */,
+				1A1B2C3D0000000000000020 /* booklists */,
 			);
 			name = Vendor;
 			sourceTree = "<group>";
@@ -142,6 +145,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				1A1B2C3D0000000000000013 /* piper in Resources */,
+				1A1B2C3D0000000000000021 /* booklists in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

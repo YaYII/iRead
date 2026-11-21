@@ -5,11 +5,15 @@ import SwiftUI
 struct BookshelfView: View {
     @EnvironmentObject var store: LibraryStore
     @EnvironmentObject var settings: ReaderSettings
+    /// 下载进度 / 暂停继续来自单例，@Published 变化会自动刷新书架
+    @ObservedObject private var downloadManager = NovelDownloadManager.shared
 
     /// 由外层 ContentView 决定如何打开阅读器，本视图不自行导航到 ReaderView。
     var onOpenBook: (Book) -> Void
     /// 长按「听书」入口：打开阅读器并自动开始朗读
     var onListenBook: (Book) -> Void
+    /// 右上角齿轮：设置不再是 Tab，由外层弹 sheet
+    var onOpenSettings: () -> Void
 
     @State private var searchText = ""
     @State private var showSearch = false
@@ -26,10 +30,12 @@ struct BookshelfView: View {
 
     init(
         onOpenBook: @escaping (Book) -> Void = { _ in },
-        onListenBook: @escaping (Book) -> Void = { _ in }
+        onListenBook: @escaping (Book) -> Void = { _ in },
+        onOpenSettings: @escaping () -> Void = {}
     ) {
         self.onOpenBook = onOpenBook
         self.onListenBook = onListenBook
+        self.onOpenSettings = onOpenSettings
     }
 
     /// 番茄式书架：九宫格（三列），封面小、信息少。窄屏（SE）也能放下三列。
@@ -181,6 +187,19 @@ struct BookshelfView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("导入书籍")
+
+            // 设置只做一个 icon，不占 Tab、不带文字：齿轮本身就够表意
+            Button {
+                onOpenSettings()
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(settings.theme.secondary)
+                    .frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("设置")
         }
         .padding(.horizontal, 20)
         .padding(.top, 4)
@@ -327,6 +346,13 @@ struct BookshelfView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // 下载控制层作为 Button 的 overlay（不在 label 内）：既盖在封面上，
+        // 又不会把内层暂停按钮的点击冒泡到外层 onOpenBook。
+        .overlay(alignment: .top) {
+            downloadLayer(for: book)
+                // 卡片宽度即封面宽度，按 3:4 撑出封面高度，正好盖住封面
+                .aspectRatio(3.0 / 4.0, contentMode: .fit)
+        }
         .contextMenu { contextMenuItems(for: book) }
     }
 
@@ -377,6 +403,13 @@ struct BookshelfView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // 同样放到 overlay（Button 外）：列表里封面固定在左上角 46×62、内边距 9
+        .overlay(alignment: .topLeading) {
+            downloadLayer(for: book, compact: true)
+                .frame(width: 46, height: 62)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .offset(x: 9, y: 9)
+        }
         .contextMenu { contextMenuItems(for: book) }
     }
 
@@ -463,6 +496,87 @@ struct BookshelfView: View {
             .rotationEffect(.degrees(rotation))
             .frame(width: 14, height: 14)
             .background(Circle().fill(Color.black.opacity(0.35)))
+    }
+
+    // MARK: - 下载状态层
+
+    /// 书有活跃下载任务时才叠加；compact 用于列表小封面（46×62）。
+    /// 整层挂在卡片 Button 的 overlay 上（Button 外），暂停按钮用 plain 样式 +
+    /// 自身 action 处理，其余区域 allowsHitTesting(false) 透传给外层打开阅读器，
+    /// 因此点暂停不会冒泡触发 onOpenBook，点封面仍照常打开「下几章读几章」。
+    @ViewBuilder
+    private func downloadLayer(for book: Book, compact: Bool = false) -> some View {
+        if let task = downloadManager.task(forBookID: book.id), task.isActive {
+            downloadLayerContent(task: task, book: book, compact: compact)
+        }
+    }
+
+    private func downloadLayerContent(task: DownloadTask, book: Book, compact: Bool) -> some View {
+        let isPaused = task.status == .paused
+        let statusText = isPaused
+            ? "已暂停"
+            : "下载中 \(task.completedChapters)/\(task.totalChapters) 章"
+        let progress = min(1, max(0, task.progress))
+
+        return ZStack {
+            // 半透明遮罩让下载状态一眼可见；不吃点击，封面其余区域仍可打开阅读器
+            Color.black.opacity(0.30)
+                .allowsHitTesting(false)
+
+            VStack(spacing: compact ? 1 : 4) {
+                // 状态文字 + 暂停/继续按钮：暂停中显示 play，下载中显示 pause
+                HStack(spacing: 3) {
+                    Text(statusText)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(settings.theme.foreground)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                        .allowsHitTesting(false)
+
+                    Button {
+                        downloadManager.togglePause(book.id)
+                    } label: {
+                        Image(systemName: isPaused ? "play.circle.fill" : "pause.circle.fill")
+                            .font(.system(size: compact ? 12 : 16))
+                            .foregroundStyle(settings.theme.accent)
+                    }
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
+                    .accessibilityLabel(isPaused ? "继续下载《\(book.title)》" : "暂停下载《\(book.title)》")
+                }
+                .padding(.horizontal, compact ? 3 : 5)
+                .padding(.vertical, 2)
+                .background(
+                    Capsule()
+                        .fill(settings.theme.background.opacity(0.82))
+                        .allowsHitTesting(false)
+                )
+
+                Spacer(minLength: 0)
+
+                // 下载进度：比阅读细线更粗、用主题强调色，并带百分比文字，和阅读进度区分
+                VStack(spacing: 1) {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule()
+                                .fill(settings.theme.secondary.opacity(0.30))
+                            Capsule()
+                                .fill(settings.theme.accent)
+                                .frame(width: geo.size.width * CGFloat(progress))
+                        }
+                    }
+                    .frame(height: compact ? 4 : 6)
+                    if !compact {
+                        Text("\(Int((progress * 100).rounded()))%")
+                            .font(.system(size: 8, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(settings.theme.foreground)
+                    }
+                }
+                .allowsHitTesting(false)
+            }
+            .padding(compact ? 2 : 5)
+        }
     }
 
     // MARK: - 长按菜单

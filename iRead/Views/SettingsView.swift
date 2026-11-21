@@ -1,12 +1,17 @@
 import SwiftUI
 import Foundation
 
-/// App 的「设置」Tab 页：阅读偏好、数据统计、关于与说明。
-/// 自带 NavigationStack，作为 Tab 的根视图使用。
+/// 「设置」页：阅读偏好、数据统计、关于与说明。
+/// 不再占一个 Tab 位，由书架右上角的齿轮图标以 sheet 形式打开。
+/// 页面自带 NavigationStack，作为 sheet 根视图直接可用。
 struct SettingsView: View {
     @EnvironmentObject var settings: ReaderSettings
     @EnvironmentObject var store: LibraryStore
 
+    /// 以 sheet 呈现：右上角给「完成」，底部也不用给标签栏留那么大的空
+    var presentedAsSheet: Bool = false
+
+    @Environment(\.dismiss) private var dismiss
     @State private var readerExpanded = false
 
     private var theme: ReadingTheme { settings.theme }
@@ -22,11 +27,12 @@ struct SettingsView: View {
                     preferenceSection
                     dataSection
                     aboutSection
+                    noticeSection
                     footnote
                 }
                 .padding(16)
-                // 给 iOS 26 浮动 Tab 栏留出空间，避免最后一张卡片被压住
-                .padding(.bottom, 84)
+                // 作为 sheet 时不被标签栏遮挡，留一点呼吸即可
+                .padding(.bottom, presentedAsSheet ? 24 : 84)
             }
             .background(theme.background.ignoresSafeArea())
             .navigationTitle("设置")
@@ -34,6 +40,15 @@ struct SettingsView: View {
             .toolbarBackground(theme.background, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbarColorScheme(theme.colorScheme, for: .navigationBar)
+            .toolbar {
+                if presentedAsSheet {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("完成") { dismiss() }
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(theme.accent)
+                    }
+                }
+            }
             .onAppear {
                 // 仅供自动化截图：展开阅读偏好面板
                 if ProcessInfo.processInfo.arguments.contains("--expand-prefs") {
@@ -161,7 +176,32 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - D 页脚
+    // MARK: - D 使用声明
+
+    private var noticeSection: some View {
+        sectionCard("使用声明") {
+            Text(UsageNotice.text)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(theme.foreground)
+                .fixedSize(horizontal: false, vertical: true)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
+                ForEach(UsageNotice.items, id: \.self) { item in
+                    Text(item)
+                        .font(.caption)
+                        .foregroundStyle(theme.accent)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(theme.accent.opacity(0.12)))
+                }
+            }
+            Text("搜书与下载功能仅用于个人学习；第三方书源的内容来源由使用者自行判断，阅读后请及时删除本地文件。")
+                .font(.caption)
+                .foregroundStyle(theme.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: - E 页脚
 
     private var footnote: some View {
         Text("本地阅读器 · 无网络书源")

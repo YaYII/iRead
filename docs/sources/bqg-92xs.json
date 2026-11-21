@@ -1,0 +1,36 @@
+[
+  {
+    "schemaVersion": 1,
+    "id": "bqg-92xs",
+    "name": "就爱文学 · 笔趣阁",
+    "host": "http://www.92xs.info",
+    "charset": "utf-8",
+    "headers": {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+    },
+    "note": "经典笔趣阁模板站，静态 HTML 抓取。个人学习自用。",
+    "search": {
+      "url": "http://www.92xs.info/modules/article/search.php?searchkey={key}",
+      "list": "tag(tr)",
+      "fields": {
+        "title": "re('href=\"[^\"]*book/\\d+\\.html\"[^>]*>([^<]+)</a>',1)",
+        "author": "re('</a></td>\\s*<td[^>]*>\\s*<a[^>]*>[^<]*</a>\\s*</td>\\s*<td[^>]*>([^<]+)</td>',1)",
+        "url": "re('href=\"([^\"]*book/\\d+\\.html)\"',1).replace('book/(\\d+)\\.html','html/$1/')"
+      }
+    },
+    "chapter": {
+      "url": "{url}",
+      "list": "re('<a href=\"/html/\\d+/\\d+\\.html\"[^>]*>[^<]+</a>',0)",
+      "fields": {
+        "title": "re('>([^<]+)</a>',1)",
+        "url": "re('href=\"([^\"]+)\"',1)"
+      }
+    },
+    "content": {
+      "url": "{url}",
+      "list": "id(ccontent).re('([^<>]+)<br\\s*/?>',1)",
+      "cleanTail": "entity.trim.drop('最新网址')",
+      "join": "\n\n"
+    }
+  }
+]

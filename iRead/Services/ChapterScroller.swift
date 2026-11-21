@@ -189,11 +189,19 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
     var onTap: (() -> Void)?
     /// 编辑菜单「从这里朗读」的回调（章号，选中句在章内的起点）
     var onStartSpeech: ((Int, Int) -> Void)?
+    /// 跟随状态变化（手动滚开 / 回到朗读位置 / 滚回朗读行附近）。
+    /// 阅读页据此决定要不要浮出「回到朗读位置」按钮。
+    var onFollowingChange: ((Bool) -> Void)?
 
     /// 当前主题
     private var currentTheme: ReadingTheme = .paper
     /// 是否跟随朗读自动滚动。用户手动滚一下就把控制权交还给他。
-    private(set) var isFollowingSpeech = true
+    private(set) var isFollowingSpeech = true {
+        didSet {
+            guard isFollowingSpeech != oldValue else { return }
+            onFollowingChange?(isFollowingSpeech)
+        }
+    }
     /// 当前朗读高亮（重建窗口后要补画回去）
     private var highlight: (chapter: Int, range: NSRange?, color: UIColor) = (0, nil, .clear)
 
@@ -314,7 +322,9 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         let upper = visibleBottom - 90
         guard y < visibleTop + 20 || y > upper else { return }
         let maxY = max(0, contentSize.height - (bounds.height - contentInset.top - contentInset.bottom))
-        let target = min(max(0, y - 60), maxY)
+        // 给目标行上方留 60pt 的呼吸位，但**不许越过本章开头** ——
+        // 否则章首那句会把上一章的尾巴顶到视口顶部，顶部标题也会读成上一章。
+        let target = min(max(top, y - 60), maxY)
         setContentOffset(CGPoint(x: 0, y: target - contentInset.top), animated: animated)
     }
 
@@ -333,8 +343,8 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         isFollowingSpeech = true
     }
 
-    /// 用户主动回到原阅读进度时交出跟随控制权，别把人又拽回朗读位置
-    func pauseFollowing() {
+    /// 跳章 / 跳书签这类显式导航：等同一次手动滑动，把视口控制权交还用户
+    func releaseFollowing() {
         isFollowingSpeech = false
     }
 
@@ -570,8 +580,10 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         }
         guard let view = views[chapter], let top = tops[chapter] else { return }
         let visible = max(1, bounds.height - contentInset.top - contentInset.bottom)
-        // 让目标行落在视口上方 18% 处，读起来更舒服
-        let target = top + view.topOffset(forCharacter: char) - visible * 0.18
+        // 章首（char == 0）落在视口最上方：否则会露出上一章的尾巴，
+        // 顶部标题也会跟着读成上一章。章内定位才把目标行放在上方 18% 处。
+        let anchor: CGFloat = char == 0 ? 0 : visible * 0.18
+        let target = top + view.topOffset(forCharacter: char) - anchor
         let maxY = max(0, contentSize.height - visible)
         let y = min(max(0, target), maxY)
         setContentOffset(CGPoint(x: 0, y: y - contentInset.top), animated: animated)
@@ -624,6 +636,11 @@ final class ScrollProxy: ObservableObject {
     /// 最近一次保存时间（用于节流）
     var lastSaveAt: Date = .distantPast
 
+    /// 视口是否仍跟着朗读。
+    /// 由滚动容器在「用户拖动 / 滚回朗读行 / 主动回到朗读位置」时回写；
+    /// 阅读页用它决定要不要浮出「回到朗读位置」。
+    @Published private(set) var isFollowingSpeech = true
+
     var hasRendered: Bool { container != nil }
 
     func scroll(toChapter chapter: Int, char: Int, animated: Bool = true) {
@@ -647,17 +664,34 @@ final class ScrollProxy: ObservableObject {
         container?.follow(chapter: chapter, char: char)
     }
 
-    /// 是否仍在跟随朗读
-    var isFollowingSpeech: Bool { container?.isFollowingSpeech ?? true }
+    /// 回到朗读位置：滚回正在念的那一句，并把跟随权收回来。
+    /// 只有「眼睛」跟着走，朗读进度本身不动。
+    func returnToSpeech(chapter: Int, char: Int) {
+        // 目标章可能早就被裁出窗口（用户滑得很远），scroll 内部会重建窗口
+        container?.scroll(toChapter: chapter, char: char, animated: true)
+        container?.resumeFollowing()
+        isFollowingSpeech = true
+    }
 
     /// 用户主动开播时恢复跟随
     func resumeFollowing() {
         container?.resumeFollowing()
+        isFollowingSpeech = true
     }
 
-    /// 回到原阅读进度：停止自动跟随
-    func pauseFollowing() {
-        container?.pauseFollowing()
+    /// 跳章 / 跳书签：只挪视口，把跟随权交还用户（朗读那边一点不动）
+    func releaseFollowing() {
+        container?.releaseFollowing()
+        isFollowingSpeech = false
+    }
+
+    /// 容器回写跟随状态（滚动容器的事件都在主线程，这里仍做一次兜底）
+    func updateFollowing(_ following: Bool) {
+        if Thread.isMainThread {
+            isFollowingSpeech = following
+        } else {
+            DispatchQueue.main.async { [weak self] in self?.isFollowingSpeech = following }
+        }
     }
 
     /// 命中测试（视图坐标），供调试注入/外部手势复用
@@ -707,6 +741,9 @@ struct BookScrollView: UIViewRepresentable {
         view.onPositionChange = onPositionChange
         view.onTap = onTap
         view.onStartSpeech = onStartSpeech
+        view.onFollowingChange = { [weak proxy] following in
+            proxy?.updateFollowing(following)
+        }
         proxy.container = view
         return view
     }
@@ -715,6 +752,9 @@ struct BookScrollView: UIViewRepresentable {
         view.onPositionChange = onPositionChange
         view.onTap = onTap
         view.onStartSpeech = onStartSpeech
+        view.onFollowingChange = { [weak proxy] following in
+            proxy?.updateFollowing(following)
+        }
         proxy.container = view
         view.configure(
             chapterCount: chapterCount,

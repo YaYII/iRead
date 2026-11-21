@@ -10,6 +10,8 @@ struct ContentView: View {
     @State private var activeBook: Book?
     @State private var showPlayer = false
     @State private var showWiFiTransfer = false
+    @State private var showDownloads = false
+    @State private var showSettings = false
 
     var body: some View {
         TabView(selection: $selection) {
@@ -21,6 +23,9 @@ struct ContentView: View {
                     // 只把书装进听书组件并打开界面，不在这里出声
                     listening.prepare(bookID: book.id)
                     showPlayer = true
+                },
+                onOpenSettings: {
+                    showSettings = true
                 }
             )
             .tabItem {
@@ -28,11 +33,29 @@ struct ContentView: View {
             }
             .tag(0)
 
-            SettingsView()
-                .tabItem {
-                    Label("设置", systemImage: "gearshape")
+            // 网络搜书：搜索在线书源，正文下载到本机后离线阅读
+            ZStack(alignment: .bottomTrailing) {
+                NovelSearchView()
+                if !NovelDownloadManager.shared.tasks.isEmpty {
+                    Button {
+                        showDownloads = true
+                    } label: {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.white)
+                            .frame(width: 46, height: 46)
+                            .background(Circle().fill(settings.theme.accent))
+                            .shadow(radius: 4)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 20)
+                    .padding(.bottom, 84)
                 }
-                .tag(1)
+            }
+            .tabItem {
+                Label("搜书", systemImage: "magnifyingglass")
+            }
+            .tag(1)
         }
         .tint(settings.theme.accent)
         .preferredColorScheme(settings.theme.colorScheme)
@@ -57,12 +80,21 @@ struct ContentView: View {
             WiFiTransferView()
                 .environmentObject(store)
         }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(presentedAsSheet: true)
+                .environmentObject(store)
+                .environmentObject(settings)
+        }
         .onAppear {
             // 仅供自动化预览/截图使用，正常启动不会命中
             let args = ProcessInfo.processInfo.arguments
             // --debug-wifi：直接打开 WiFi 传书页（自测/自动化用）
             if args.contains("--debug-wifi") {
                 showWiFiTransfer = true
+            }
+            // --debug-search：直接切到搜书页（自测/自动化用）
+            if args.contains("--debug-search") {
+                selection = 1
             }
             // --voice cantonese / male / female：截图时指定音色档位
             if let i = args.firstIndex(of: "--voice"), i + 1 < args.count {
@@ -100,7 +132,8 @@ struct ContentView: View {
                     }
                 }
             } else if args.contains("--debug-settings") {
-                selection = 1
+                // 仅供自测：设置已改为书架齿轮弹出的 sheet
+                showSettings = true
             }
             // 仅供自测：模拟「打开播放器 → 点边听边读」的真实时序
             if args.contains("--debug-player-follow") {
@@ -145,6 +178,10 @@ struct ContentView: View {
             guard let id, let book = store.book(id) else { return }
             _ = listening.consumeReaderRequest()
             openReaderFollowing(book: book)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("iReadOpenBookshelf"))) { _ in
+            // 详情页点下载后立即跳到书架（书已进书架，可边下边读）
+            selection = 0
         }
     }
 

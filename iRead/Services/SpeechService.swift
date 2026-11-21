@@ -33,10 +33,35 @@ final class SpeechService: NSObject, ObservableObject {
     /// 当前内容读完后请求下一段，由 ReaderView 设置
     var onAdvance: (() -> Void)?
 
+    /// 最近一次真正交给 `AVSpeechUtterance` 的音色名（诊断用，看粤语有没有被换掉）
+    private(set) var debugCurrentVoiceName: String?
+
+    /// 调试追踪钩子（仅 `--yue-selftest` 使用）：把关键状态变化写到文件里，
+    /// 因为真机拿不到 stdout，只能靠这个定位「谁把播放停掉了」。
+    var debugTrace: ((String) -> Void)?
+    /// 用 autoclosure：正式运行时 `debugTrace` 为 nil，消息根本不会被求值
+    /// （`Thread.callStackSymbols` 这种开销大的尤其不能白算）
+    private func trace(_ message: @autoclosure () -> String) {
+        guard let debugTrace else { return }
+        debugTrace(message())
+    }
+
+    /// 调试用：`AVSpeechSynthesizer` 的真实内部状态（它可能和我们的 isPaused 不一致）
+    var debugSynthesizerState: String {
+        "synth[speaking=\(synthesizer.isSpeaking) paused=\(synthesizer.isPaused)]"
+    }
+
     private let log = Logger(subsystem: "com.yingyang.iread", category: "Speech")
 
     // MARK: 系统语音
     private let synthesizer = AVSpeechSynthesizer()
+    /// 当前这一句对应的 utterance。
+    ///
+    /// `AVSpeechSynthesizer` 有个坑：`stopSpeaking(at: .immediate)` 掐断正在念的句子时，
+    /// 它补发的回调是 **`didFinish` 而不是 `didCancel`**。如果不区分是哪一句的回调，
+    /// 改语速 / 切章这种「打断重播」会被当成「这一段读完了」，立刻推进到下一段 ——
+    /// 表现就是点一下控制，正文往前蹦一段。所以所有回调都先比对 utterance 身份。
+    private var activeUtterance: AVSpeechUtterance?
 
     // MARK: 本地神经语音播放管线
     private let audioEngine = AVAudioEngine()
@@ -154,10 +179,12 @@ final class SpeechService: NSObject, ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         activateAudioSession()
         haltPlayback()
+        trace("start(text:) len=\(text.count) trimmed=\(trimmed.count) profile=\(profile.rawValue)")
 
         isActive = true
         isPaused = false
         currentRate = rate
+        trace("start -> isActive=true")
 
         guard !trimmed.isEmpty else {
             isSpeaking = false
@@ -183,14 +210,16 @@ final class SpeechService: NSObject, ObservableObject {
             if !Self.isPiperAvailable(model) {
                 log.error("piper model \(model.rawValue, privacy: .public) unavailable, falling back to system voice")
                 activeEngine = .system
-                startSystem(trimmed, rate: rate, voice: Self.defaultChineseVoice())
+                startSystem(text, rate: rate, voice: Self.defaultChineseVoice())
                 return
             }
             activeEngine = .piper
             startPiper(trimmed, rate: rate, model: model)
         } else {
             activeEngine = .system
-            startSystem(trimmed, rate: rate, voice: Self.voice(for: resolved))
+            // 用**未 trim** 的原文：系统语音按字符回调区间，
+            // 一旦把段首的换行/全角空格去掉，逐字高亮就会整体左移几个字
+            startSystem(text, rate: rate, voice: Self.voice(for: resolved))
         }
     }
 
@@ -198,10 +227,20 @@ final class SpeechService: NSObject, ObservableObject {
         guard isActive, !isPaused else { return }
         if activeEngine == .piper {
             player.pause()
+            isPaused = true
         } else {
-            synthesizer.pauseSpeaking(at: .word)
+            // `.word` 等不到词边界时会一直不停（中文/粤语音色的老问题），
+            // 失败就退到 `.immediate` 立刻停，保证按钮按下一定有反应
+            let ok = synthesizer.pauseSpeaking(at: .word)
+                || synthesizer.pauseSpeaking(at: .immediate)
+            trace("pause() ok=\(ok) \(debugSynthesizerState)")
+            // 即便系统说「没在念」（正处在两段之间的空档）也要记住这次暂停意图：
+            // 否则下一段一开播就把这次按键吃掉了，用户看到的是「按了暂停还在念」
+            if !ok {
+                log.notice("pause requested while synthesizer idle, treating as paused")
+            }
+            isPaused = true
         }
-        isPaused = true
     }
 
     func resume() {
@@ -214,7 +253,8 @@ final class SpeechService: NSObject, ObservableObject {
             checkFinished(token: runToken)
             return
         }
-        synthesizer.continueSpeaking()
+        let ok = synthesizer.continueSpeaking()
+        trace("resume() continueSpeaking=\(ok) \(debugSynthesizerState)")
         isPaused = false
     }
 
@@ -223,12 +263,14 @@ final class SpeechService: NSObject, ObservableObject {
     }
 
     func stop() {
+        trace("stop() called, isActive=\(isActive) caller=\(Thread.callStackSymbols.dropFirst().prefix(6).joined(separator: " <- "))")
         guard isActive else { return }
         haltPlayback()
         isActive = false
         isPaused = false
         isSpeaking = false
         onAdvance = nil
+        trace("stop() -> isActive=false")
     }
 
     /// 立即静音并作废在途合成，但不改变 isActive（供换段复用）
@@ -244,6 +286,11 @@ final class SpeechService: NSObject, ObservableObject {
         if audioReady {
             player.stop()
         }
+        // 先作废旧句子的身份，再掐断：这样它补发的 didFinish/didCancel 会被忽略，
+        // 不会把「打断重播」误判成「这一段读完了」
+        activeUtterance = nil
+        // 暂停状态下 stopSpeaking 不一定会生效，先解除暂停再停
+        if synthesizer.isPaused { synthesizer.continueSpeaking() }
         synthesizer.stopSpeaking(at: .immediate)
         PiperSynthesizer.shared.cancelPending()
     }
@@ -257,7 +304,12 @@ final class SpeechService: NSObject, ObservableObject {
         // 标点停顿交给系统朗读引擎（它会按逗号/句号自然停顿）
         utterance.postUtteranceDelay = 0.25
         utterance.voice = voice ?? Self.defaultChineseVoice()
+        activeUtterance = utterance
+        debugCurrentVoiceName = utterance.voice?.name
+        log.notice("system speak \(text.count, privacy: .public) chars voice=\(utterance.voice?.name ?? "-", privacy: .public) lang=\(utterance.voice?.language ?? "-", privacy: .public) rate=\(rate, privacy: .public)")
+        trace("startSystem chars=\(text.count) voice=\(utterance.voice?.name ?? "-") rate=\(rate) isSpeakingBefore=\(synthesizer.isSpeaking)")
         synthesizer.speak(utterance)
+        trace("startSystem speak() returned isSpeakingNow=\(synthesizer.isSpeaking)")
         isSpeaking = true
     }
 
@@ -532,6 +584,11 @@ final class SpeechService: NSObject, ObservableObject {
 
 extension SpeechService: AVSpeechSynthesizerDelegate {
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        guard utterance === activeUtterance else {
+            trace("delegate didStart 忽略旧句子")
+            return
+        }
+        log.notice("system didStart voice=\(utterance.voice?.name ?? "-", privacy: .public)")
         DispatchQueue.main.async { self.isSpeaking = true }
     }
 
@@ -541,6 +598,8 @@ extension SpeechService: AVSpeechSynthesizerDelegate {
         willSpeakRangeOfSpeechString characterRange: NSRange,
         utterance: AVSpeechUtterance
     ) {
+        // 旧句子的迟到回调会把高亮拽回已经念过的地方，必须按身份过滤
+        guard utterance === activeUtterance else { return }
         DispatchQueue.main.async {
             guard self.activeEngine == .system, self.isActive else { return }
             self.spokenRange = characterRange
@@ -548,6 +607,14 @@ extension SpeechService: AVSpeechSynthesizerDelegate {
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        guard utterance === activeUtterance else {
+            // 被 `stopSpeaking` 掐断的旧句子也会走 didFinish，这里绝不能推进
+            trace("delegate didFinish 忽略旧句子")
+            return
+        }
+        log.notice("system didFinish voice=\(utterance.voice?.name ?? "-", privacy: .public)")
+        trace("delegate didFinish voice=\(utterance.voice?.name ?? "-") active=\(isActive) paused=\(isPaused) onAdvance=\(onAdvance != nil)")
+        activeUtterance = nil
         DispatchQueue.main.async {
             guard self.activeEngine == .system else { return }
             self.isSpeaking = false
@@ -557,6 +624,13 @@ extension SpeechService: AVSpeechSynthesizerDelegate {
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        guard utterance === activeUtterance else {
+            trace("delegate didCancel 忽略旧句子")
+            return
+        }
+        log.notice("system didCancel voice=\(utterance.voice?.name ?? "-", privacy: .public)")
+        trace("delegate didCancel voice=\(utterance.voice?.name ?? "-") active=\(isActive)")
+        activeUtterance = nil
         DispatchQueue.main.async {
             guard self.activeEngine == .system else { return }
             self.isSpeaking = false
