@@ -49,8 +49,18 @@ fi
 grep -E "App installed|bundleID" "$INSTALL_LOG" | head -3
 
 echo "==> 启动 App"
-xcrun devicectl device process launch --device "$DEVICE_ID" "$BUNDLE_ID" 2>&1 | tail -2 || \
-  echo "（启动失败多半是锁屏，解锁后手动点开 iRead 即可）"
+LAUNCH_LOG=$(mktemp)
+if ! xcrun devicectl device process launch --device "$DEVICE_ID" "$BUNDLE_ID" > "$LAUNCH_LOG" 2>&1; then
+  tail -4 "$LAUNCH_LOG"
+  if grep -qiE "trusted|Security|invalid code signature" "$LAUNCH_LOG"; then
+    echo
+    echo "⚠️  首次用这个 Apple ID 签名，需要在 iPhone 上信任一次开发者："
+    echo "    设置 → 通用 → VPN 与设备管理 → 开发者 App → 选你的 Apple ID → 信任"
+    echo "    （iOS 18 及以后显示『允许并重启』）；之后每次重装都不用再点。"
+  else
+    echo "（启动失败多半是锁屏，解锁后手动点开 iRead 即可）"
+  fi
+fi
 
 echo "==> 新签名到期（UTC）"
 security cms -D -i "$APP/embedded.mobileprovision" 2>/dev/null \
