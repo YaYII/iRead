@@ -32,9 +32,9 @@ struct BookshelfView: View {
         self.onListenBook = onListenBook
     }
 
-    /// 番茄式书架：一屏三列，封面小、信息少。窄屏（SE）也能放下三列。
+    /// 番茄式书架：九宫格（三列），封面小、信息少。窄屏（SE）也能放下三列。
     private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: 88, maximum: 124), spacing: 12)]
+        [GridItem(.adaptive(minimum: 70, maximum: 112), spacing: 24)]
     }
 
     /// 置顶优先，其次最近阅读，其次添加时间；搜索按书名 / 作者过滤。
@@ -129,13 +129,13 @@ struct BookshelfView: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 8) {
             Text("书架")
-                .font(.title2.bold())
+                .font(.title3.bold())
                 .foregroundStyle(settings.theme.foreground)
             Text("\(store.books.count) 本")
-                .font(.caption2.weight(.medium))
+                .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(settings.theme.secondary)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
                 .background(Capsule().fill(settings.theme.secondary.opacity(0.14)))
             Spacer(minLength: 4)
             // 搜索收进图标，和番茄书架一致：不占常驻一行
@@ -152,7 +152,7 @@ struct BookshelfView: View {
                 Image(systemName: "magnifyingglass")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(showSearch ? settings.theme.accent : settings.theme.secondary)
-                    .frame(width: 34, height: 34)
+                    .frame(width: 30, height: 30)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -164,7 +164,7 @@ struct BookshelfView: View {
                 Image(systemName: showGrid ? "square.grid.2x2" : "list.bullet")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(settings.theme.secondary)
-                    .frame(width: 34, height: 34)
+                    .frame(width: 30, height: 30)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -174,17 +174,17 @@ struct BookshelfView: View {
                 showImport = true
             } label: {
                 Image(systemName: "plus")
-                    .font(.subheadline.weight(.bold))
+                    .font(.footnote.weight(.bold))
                     .foregroundStyle(.white)
-                    .frame(width: 32, height: 32)
+                    .frame(width: 30, height: 30)
                     .background(Circle().fill(settings.theme.accent))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("导入书籍")
         }
         .padding(.horizontal, 20)
-        .padding(.top, 6)
-        .padding(.bottom, 10)
+        .padding(.top, 4)
+        .padding(.bottom, 8)
     }
 
     @ViewBuilder
@@ -253,12 +253,12 @@ struct BookshelfView: View {
     // MARK: - 内容区域
 
     private var gridContent: some View {
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 18) {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
             ForEach(sortedBooks) { book in
                 gridCard(book: book)
             }
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 24)
         .padding(.bottom, 96)
     }
 
@@ -311,14 +311,14 @@ struct BookshelfView: View {
         Button {
             onOpenBook(book)
         } label: {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 5) {
                 // 先用透明占位把格子撑成 3:4，再叠封面，保证每列封面等宽等高
                 Color.clear
                     .aspectRatio(3.0 / 4.0, contentMode: .fit)
                     .overlay { coverView(book: book) }
 
                 Text(book.title)
-                    .font(.footnote.weight(.medium))
+                    .font(.caption.weight(.medium))
                     .foregroundStyle(settings.theme.foreground)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -405,7 +405,7 @@ struct BookshelfView: View {
 
             if showsTitle {
                 Text(book.title)
-                    .font(.caption.weight(.bold))
+                    .font(.caption2.weight(.bold))
                     .multilineTextAlignment(.center)
                     .lineLimit(3)
                     .minimumScaleFactor(0.6)
@@ -448,9 +448,9 @@ struct BookshelfView: View {
                 .frame(height: 2.5)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
         )
         .shadow(color: .black.opacity(0.16), radius: 6, x: 0, y: 3)
@@ -458,10 +458,10 @@ struct BookshelfView: View {
 
     private func cornerBadge(systemName: String, rotation: Double) -> some View {
         Image(systemName: systemName)
-            .font(.system(size: 8, weight: .bold))
+            .font(.system(size: 7, weight: .bold))
             .foregroundStyle(.white)
             .rotationEffect(.degrees(rotation))
-            .frame(width: 16, height: 16)
+            .frame(width: 14, height: 14)
             .background(Circle().fill(Color.black.opacity(0.35)))
     }
 
