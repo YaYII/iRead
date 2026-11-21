@@ -129,7 +129,7 @@ struct BookshelfView: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 8) {
             Text("书架")
-                .font(.title3.bold())
+                .font(.system(size: 20, weight: .bold))
                 .foregroundStyle(settings.theme.foreground)
             Text("\(store.books.count) 本")
                 .font(.system(size: 10, weight: .medium))
@@ -218,10 +218,10 @@ struct BookshelfView: View {
     private var searchBar: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
-                .font(.footnote)
+                .font(.system(size: 12))
                 .foregroundStyle(settings.theme.secondary)
             TextField("搜索书名或作者", text: $searchText)
-                .font(.footnote)
+                .font(.system(size: 12))
                 .focused($searchFocused)
                 .foregroundStyle(settings.theme.foreground)
                 .tint(settings.theme.accent)
@@ -234,7 +234,7 @@ struct BookshelfView: View {
                     searchText = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.footnote)
+                        .font(.system(size: 12))
                         .foregroundStyle(settings.theme.secondary)
                 }
                 .buttonStyle(.plain)
@@ -318,7 +318,7 @@ struct BookshelfView: View {
                     .overlay { coverView(book: book) }
 
                 Text(book.title)
-                    .font(.caption.weight(.medium))
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(settings.theme.foreground)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -341,7 +341,7 @@ struct BookshelfView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 5) {
                         Text(book.title)
-                            .font(.subheadline.weight(.semibold))
+                            .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(settings.theme.foreground)
                             .lineLimit(1)
                         if book.isPinned {
@@ -356,11 +356,11 @@ struct BookshelfView: View {
                         }
                     }
                     Text(book.displayAuthor)
-                        .font(.caption2)
+                        .font(.system(size: 10))
                         .foregroundStyle(settings.theme.secondary)
                         .lineLimit(1)
                     Text("共 \(book.chapterCount) 章 · 已读 \(book.progressPercent)")
-                        .font(.caption2)
+                        .font(.system(size: 10))
                         .foregroundStyle(settings.theme.secondary)
                         .lineLimit(1)
                 }
@@ -405,7 +405,7 @@ struct BookshelfView: View {
 
             if showsTitle {
                 Text(book.title)
-                    .font(.caption2.weight(.bold))
+                    .font(.system(size: 11, weight: .bold))
                     .multilineTextAlignment(.center)
                     .lineLimit(3)
                     .minimumScaleFactor(0.6)
