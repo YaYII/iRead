@@ -11,6 +11,7 @@ struct RuleSection: Codable, Hashable {
     var list: String?                   // 把页面切成"项"数组的选择器
     var fields: [String: String]?       // 字段名 → 选择器
     var page: PageRule?                 // 分页配置
+    var nextPage: String?               // 「下一页」链接选择器：取不到即停（正文分页站）
     var join: String?                   // 多段/多页拼接符
     var cleanTail: String?              // 对 list 每项再跑的清洗管道
     var urlPrefix: String?              // 只返回 id 时拼在前面的前缀
@@ -20,6 +21,7 @@ struct RuleSection: Codable, Hashable {
     init(url: String = "", method: String? = nil, body: String? = nil,
          headers: [String: String]? = nil, list: String? = nil,
          fields: [String: String]? = nil, page: PageRule? = nil,
+         nextPage: String? = nil,
          join: String? = nil, cleanTail: String? = nil, urlPrefix: String? = nil) {
         self.url = url
         self.method = method
@@ -28,9 +30,31 @@ struct RuleSection: Codable, Hashable {
         self.list = list
         self.fields = fields
         self.page = page
+        self.nextPage = nextPage
         self.join = join
         self.cleanTail = cleanTail
         self.urlPrefix = urlPrefix
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case url, method, body, headers, list, fields, page, nextPage, join, cleanTail, urlPrefix
+    }
+
+    /// 手写解码：只写 `list` + `fields` 的极简规则也能导入（默认值不参与合成解码，
+    /// 之前必须把 url/method/body/... 全部写全，用户手写 JSON 一律报「不是有效的书源」）。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+        method = try c.decodeIfPresent(String.self, forKey: .method)
+        body = try c.decodeIfPresent(String.self, forKey: .body)
+        headers = try c.decodeIfPresent([String: String].self, forKey: .headers)
+        list = try c.decodeIfPresent(String.self, forKey: .list)
+        fields = try c.decodeIfPresent([String: String].self, forKey: .fields)
+        page = try c.decodeIfPresent(PageRule.self, forKey: .page)
+        nextPage = try c.decodeIfPresent(String.self, forKey: .nextPage)
+        join = try c.decodeIfPresent(String.self, forKey: .join)
+        cleanTail = try c.decodeIfPresent(String.self, forKey: .cleanTail)
+        urlPrefix = try c.decodeIfPresent(String.self, forKey: .urlPrefix)
     }
 }
 
@@ -39,6 +63,23 @@ struct PageRule: Codable, Hashable {
     var max: Int = 100
     var step: Int = 1
     var stopWhenEmpty: Bool = true
+
+    init(start: Int = 1, max: Int = 100, step: Int = 1, stopWhenEmpty: Bool = true) {
+        self.start = start
+        self.max = max
+        self.step = step
+        self.stopWhenEmpty = stopWhenEmpty
+    }
+
+    enum CodingKeys: String, CodingKey { case start, max, step, stopWhenEmpty }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        start = try c.decodeIfPresent(Int.self, forKey: .start) ?? 1
+        max = try c.decodeIfPresent(Int.self, forKey: .max) ?? 100
+        step = try c.decodeIfPresent(Int.self, forKey: .step) ?? 1
+        stopWhenEmpty = try c.decodeIfPresent(Bool.self, forKey: .stopWhenEmpty) ?? true
+    }
 }
 
 // MARK: - 网络书源
@@ -73,12 +114,36 @@ struct NovelSource: Codable, Identifiable, Hashable {
         case charset, headers, type, kind
     }
 
+    /// 手写解码放在 extension 里（写在结构体内部会抑制成员初始化器）。
+    /// 缺省的区块按空规则处理，缺省的字段用默认值——
+    /// 这样用户只写 `id/name/host/search/chapter/content` 也能导入成功。
     var isJSON: Bool { type?.lowercased() == "json" }
     /// 兼容旧代码里的读取
     var searchURL: String { search.url }
 
     static func == (lhs: NovelSource, rhs: NovelSource) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+extension NovelSource {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL) ?? ""
+        charset = try c.decodeIfPresent(String.self, forKey: .charset)
+        headers = try c.decodeIfPresent([String: String].self, forKey: .headers)
+        type = try c.decodeIfPresent(String.self, forKey: .type)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        isBuiltin = try c.decodeIfPresent(Bool.self, forKey: .isBuiltin) ?? false
+        note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
+        search = try c.decodeIfPresent(RuleSection.self, forKey: .search) ?? RuleSection()
+        detail = try c.decodeIfPresent(RuleSection.self, forKey: .detail) ?? RuleSection()
+        chapter = try c.decodeIfPresent(RuleSection.self, forKey: .chapter) ?? RuleSection()
+        content = try c.decodeIfPresent(RuleSection.self, forKey: .content) ?? RuleSection()
+    }
 }
 
 // MARK: - 搜索结果

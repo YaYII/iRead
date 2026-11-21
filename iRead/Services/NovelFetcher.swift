@@ -22,7 +22,7 @@ enum NovelFetcher {
         let resp = try await request(rule, url: url, source: source)
 
         let items = selectList(rule.list, from: resp.text, source: source)
-        return items.compactMap { item in
+        let results = items.compactMap { item -> SearchResult? in
             let title = field("title", rule: rule, from: item, source: source) ?? ""
             guard !title.isEmpty else { return nil }
             let author = field("author", rule: rule, from: item, source: source) ?? ""
@@ -39,6 +39,18 @@ enum NovelFetcher {
                 sourceName: source.name
             )
         }
+        // 有的站点会把同一本书在列表里重复列好几次（推荐位/排行榜混排），按详情页地址去重
+        var seen = Set<String>()
+        let unique = results.filter { seen.insert($0.detailURL).inserted }
+
+        // 相关性过滤：笔趣阁系模板站的搜索页会把「同类推荐」一起返回，搜「剑来」能回 100 本无关的书。
+        // 书源一多，这些噪声会把真正要找的书淹没，所以优先只留书名/作者含关键词的条目；
+        // 一条都没命中（作者名、繁体/别名搜索）时退回完整列表，不做过度过滤。
+        let query = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matched = query.isEmpty ? unique : unique.filter {
+            $0.title.localizedCaseInsensitiveContains(query) || $0.author.localizedCaseInsensitiveContains(query)
+        }
+        return Array((matched.isEmpty ? unique : matched).prefix(30))
     }
 
     // MARK: - 章节目录
@@ -67,6 +79,14 @@ enum NovelFetcher {
             let rawURL = field("url", rule: rule, from: item, source: source) ?? ""
             let chapterURL = fullURL(rawURL, prefix: rule.urlPrefix, source: source)
             return ChapterLink(index: idx, title: title, url: chapterURL.isEmpty ? "\(idx)" : chapterURL)
+        }
+        // 目录里常混着「最新章节」区块，同一章会以不同标题出现两次（最新章节在前、正文在后，或反之）。
+        // 按 URL 去重并保留第一次出现的位置；标题里的章节号顺序因此不会被乱序区块打断。
+        chapters = dedupe(chapters)
+        chapters = chapters.enumerated().map { i, c in
+            var c = c
+            c.index = i
+            return c
         }
         if chapters.isEmpty {
             // 兜底：整页当一章，保证任何源都能下载
@@ -151,6 +171,29 @@ enum NovelFetcher {
                 }
                 pageNum += 1
                 fetched += 1
+            }
+        } else if let nextPage = rule.nextPage, !nextPage.isEmpty {
+            // 正文分页站：按「下一页」链接一页页跟下去（选择器取不到即停）。
+            // 常见写法：re('<a[^>]*href="([^"]*_\d+\.html)"[^>]*id="pt_next"',1)
+            // 只在链接确实是本章的分页时才命中 —— 翻到最后一页变成「下一章」时自然停下。
+            var url = fill(rule.url, source: source, extras: [
+                "url": encoded(chapter.url),
+                "page": "1",
+                "key": encoded(chapter.title)
+            ])
+            if url.isEmpty { url = chapter.url }
+            var visited = Set<String>()
+            var pages = 0
+            while !url.isEmpty, pages < 20, !visited.contains(url) {
+                visited.insert(url)
+                let text = try await request(rule, url: url, source: source).text
+                let parts = cleanSegments(selectList(rule.list, from: text, source: source), rule: rule, source: source)
+                segments.append(contentsOf: parts)
+                pages += 1
+                guard let next = SelectorEngine.first(nextPage, from: text),
+                      let abs = WebText.absolute(next, base: url),
+                      !visited.contains(abs) else { break }
+                url = abs
             }
         } else {
             let url = fill(rule.url, source: source, extras: [
@@ -320,6 +363,12 @@ enum NovelFetcher {
     }
 
     // MARK: - 规则执行辅助
+
+    /// 按章节 URL 去重（保留首次出现）。
+    private static func dedupe(_ chapters: [ChapterLink]) -> [ChapterLink] {
+        var seen = Set<String>()
+        return chapters.filter { seen.insert($0.url).inserted }
+    }
 
     private static func request(_ rule: RuleSection, url: String, source: NovelSource) async throws -> NovelHTTPClient.Response {
         var headers = source.headers ?? [:]

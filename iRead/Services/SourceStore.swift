@@ -27,8 +27,19 @@ final class SourceStore: ObservableObject {
     private func load() {
         var result: [NovelSource] = []
 
-        // 内置
+        // 内置（随 App 打包）
         if let url = Bundle.main.url(forResource: "sources_builtin", withExtension: "json"),
+           let data = try? Data(contentsOf: url),
+           let list = try? JSONDecoder().decode([NovelSource].self, from: data) {
+            result.append(contentsOf: list.map {
+                var s = $0
+                s.isBuiltin = true
+                return s
+            })
+        }
+
+        // 内置书源包：由「阅读 3.0」共享书源转换而来，规则见 Resources/sources_legado.json
+        if let url = Bundle.main.url(forResource: "sources_legado", withExtension: "json"),
            let data = try? Data(contentsOf: url),
            let list = try? JSONDecoder().decode([NovelSource].self, from: data) {
             result.append(contentsOf: list.map {
@@ -56,13 +67,33 @@ final class SourceStore: ObservableObject {
             s.isBuiltin = true
             result.append(s)
         }
+        // 内置源的启用/禁用状态存在 UserDefaults 里（资源文件是只读的，改了不写回）
+        for i in result.indices where result[i].isBuiltin {
+            if let saved = Self.enabledOverrides[result[i].id] { result[i].enabled = saved }
+        }
         sources = result
+    }
+
+    /// 内置源的开关覆盖值：key 为书源 id。
+    private static var enabledOverrides: [String: Bool] {
+        UserDefaults.standard.dictionary(forKey: "source.enabledOverrides") as? [String: Bool] ?? [:]
+    }
+
+    private static func saveEnabledOverride(_ id: String, _ enabled: Bool) {
+        var map = enabledOverrides
+        map[id] = enabled
+        UserDefaults.standard.set(map, forKey: "source.enabledOverrides")
     }
 
     // MARK: - 增删改
 
     func setEnabled(_ id: String, enabled: Bool) {
         mutate(id) { $0.enabled = enabled }
+        if source(id)?.isBuiltin == true {
+            Self.saveEnabledOverride(id, enabled)
+        } else {
+            saveCustom()
+        }
     }
 
     func add(_ source: NovelSource) throws {

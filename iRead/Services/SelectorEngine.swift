@@ -21,6 +21,7 @@ enum SelectorEngine {
         case first
         case last
         case nth(Int)
+        case skip(Int)                   // 跳过前 n 项（去掉表格表头、「直达底部」这类干扰行）
         case join(String)
         case json(String)                // JSON 键路径
     }
@@ -60,6 +61,8 @@ enum SelectorEngine {
                 if let l = state.last { next.append(l) }
             case .nth(let i):
                 if state.indices.contains(i) { next.append(state[i]) }
+            case .skip(let n):
+                if n < state.count { next.append(contentsOf: state[n...]) }
             case .join(let sep):
                 next.append(state.joined(separator: sep))
             case .json(let path):
@@ -134,6 +137,7 @@ enum SelectorEngine {
                 return .replace(pattern: args.values.first ?? "", with: args.values.count > 1 ? args.values[1] : "")
             case "drop": return .drop(pattern: args.values.first ?? "")
             case "nth": return .nth(Int(args.values.first ?? "") ?? 0)
+            case "skip": return .skip(max(0, Int(args.values.first ?? "") ?? 0))
             case "join": return .join(args.values.first ?? "")
             case "json": return .json(args.values.first ?? "")
             default: return nil

@@ -1,0 +1,267 @@
+[
+  {
+    "schemaVersion": 1,
+    "id": "legado-82d802b9c1",
+    "name": "00小说网",
+    "host": "https://www.00shu.la",
+    "type": "html",
+    "enabled": true,
+    "note": "阅读共享书源｜目录一次给全本，正文首尾广告已清；个别书目录从中间章开始",
+    "search": {
+      "url": "https://www.00shu.la/modules/article/search.php?q={key}",
+      "list": "class(grid).tag(tr).skip(1)",
+      "fields": {
+        "title": "tag(td).nth(0).tag(a).text",
+        "url": "tag(td).nth(0).tag(a).attr(href)",
+        "author": "tag(td).nth(2).text"
+      }
+    },
+    "chapter": {
+      "list": "id(list).tag(dd)",
+      "fields": {
+        "title": "tag(a).text",
+        "url": "tag(a).attr(href)"
+      }
+    },
+    "content": {
+      "list": "id(content)",
+      "cleanTail": "replace('<div id=\"content_tip\">[\\s\\S]*?</div>','').replace('最新网址：\\S+','').replace('txt下载地址：[^<]*','').replace('手机阅读：[^<]*','').replace('为了方便下次阅读[^<]*','')"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "legado-1b16a90c61",
+    "name": "亿软网",
+    "host": "https://www.yruan.com/",
+    "type": "html",
+    "enabled": true,
+    "note": "阅读共享书源｜笔趣阁模板，目录全、正文干净",
+    "search": {
+      "url": "https://www.yruan.com/modules/article/search.php?searchkey={key}",
+      "list": "class(grid).tag(tr).skip(1)",
+      "fields": {
+        "title": "tag(td).nth(0).tag(a).text",
+        "url": "tag(td).nth(0).tag(a).attr(href)",
+        "author": "tag(td).nth(2).text"
+      }
+    },
+    "chapter": {
+      "list": "id(list).tag(dd)",
+      "fields": {
+        "title": "tag(a).text",
+        "url": "tag(a).attr(href)"
+      }
+    },
+    "content": {
+      "list": "id(content)",
+      "cleanTail": "replace('<div id=\"content_tip\">[\\s\\S]*?</div>','').replace('最新网址：\\S+','')"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "legado-b6afa65926",
+    "name": "平凡文学",
+    "host": "http://www.pfwx.com",
+    "type": "html",
+    "enabled": true,
+    "note": "阅读共享书源｜目录全、正文干净，换行偏多",
+    "search": {
+      "url": "http://www.pfwx.com/modules/article/search.php?searchkey={key}&searchtype=articlename",
+      "list": "class(tutui)",
+      "fields": {
+        "title": "tag(a).nth(1).text",
+        "url": "tag(a).nth(1).attr(href)",
+        "author": "tag(h3).nth(0).text",
+        "cover": "tag(img).attr(src)"
+      }
+    },
+    "chapter": {
+      "list": "class(zhangjiekaishi).tag(li)",
+      "fields": {
+        "title": "tag(a).text",
+        "url": "tag(a).attr(href)"
+      }
+    },
+    "content": {
+      "list": "id(booktext)",
+      "cleanTail": "replace('<!--[\\s\\S]*?-->','').replace('★★[\\s\\S]*?朋友吧！','')"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "legado-606e0e5ca4",
+    "name": "溜达小说",
+    "host": "http://www.liudatxt.com",
+    "type": "html",
+    "enabled": true,
+    "note": "阅读共享书源｜目录全、正文干净，抓取稳定",
+    "search": {
+      "url": "http://www.liudatxt.com/search.php?searchkey={key}",
+      "list": "id(sitembox).tag(dl)",
+      "fields": {
+        "title": "tag(a).nth(1).text",
+        "url": "tag(a).nth(1).attr(href)",
+        "author": "class(book_other).nth(0).tag(span).nth(0).text",
+        "cover": "tag(img).attr(src)"
+      }
+    },
+    "chapter": {
+      "list": "id(readerlist).tag(li).tag(a)",
+      "fields": {
+        "title": "text",
+        "url": "attr(href)"
+      }
+    },
+    "content": {
+      "list": "id(content)"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "legado-278c0d8a63",
+    "name": "快眼看书",
+    "host": "http://www.booksky.cc/",
+    "type": "html",
+    "enabled": true,
+    "note": "阅读共享书源｜目录全，正文首尾「最新网址」已清",
+    "search": {
+      "url": "http://www.booksky.cc/modules/article/search.php?searchkey={key}",
+      "list": "class(librarylist).tag(li)",
+      "fields": {
+        "title": "class(info).tag(span).nth(0).tag(a).text",
+        "url": "class(info).tag(span).nth(0).tag(a).attr(href)",
+        "author": "class(info).tag(span).nth(1).text",
+        "cover": "class(pt-ll-l).tag(a).tag(img).attr(src)"
+      }
+    },
+    "chapter": {
+      "list": "class(fulldir).tag(ul).tag(li).tag(a)",
+      "fields": {
+        "title": "text",
+        "url": "attr(href)"
+      }
+    },
+    "content": {
+      "list": "id(chaptercontent)",
+      "cleanTail": "replace('<div id=\"content_tip\">[\\s\\S]*?</div>','').replace('最新网址：\\S+','')"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "legado-440f7d238e",
+    "name": "爱笔楼",
+    "host": "http://www.biqutu.info",
+    "type": "html",
+    "enabled": true,
+    "note": "阅读共享书源｜「最新章节」块已裁掉，站点提示已清",
+    "search": {
+      "url": "http://www.biqutu.info/search.html?name={key}",
+      "list": "class(novelslist2).tag(li).skip(1)",
+      "fields": {
+        "title": "class(s2).tag(a).text",
+        "url": "class(s2).tag(a).attr(href)",
+        "author": "class(s4).tag(a).text"
+      }
+    },
+    "chapter": {
+      "list": "id(list).re('正文</dt>([\\s\\S]*)',1).tag(dd)",
+      "fields": {
+        "title": "tag(a).text",
+        "url": "tag(a).attr(href)"
+      }
+    },
+    "content": {
+      "list": "id(content)",
+      "cleanTail": "replace('天才一秒记住本站地址：[^<]*','').replace('<div align=\"center\">[\\s\\S]*?</div>','').replace('章节错误[\\s\\S]{0,160}?请耐心等待。','')"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "legado-af5ca354f5",
+    "name": "天域小说",
+    "host": "http://www.tycqzw.info",
+    "type": "html",
+    "enabled": true,
+    "note": "阅读共享书源｜「最新章节」块已裁掉，尾部推荐位已清",
+    "search": {
+      "url": "http://www.tycqzw.info/search.php?searchkey={key}",
+      "list": "class(grid).tag(tr).skip(1)",
+      "fields": {
+        "title": "class(even).nth(0).tag(a).nth(0).text",
+        "url": "class(even).nth(0).tag(a).nth(0).attr(href)",
+        "author": "class(even).nth(1).text"
+      }
+    },
+    "chapter": {
+      "list": "id(list).re('正文</dt>([\\s\\S]*)',1).tag(dd)",
+      "fields": {
+        "title": "tag(a).text",
+        "url": "tag(a).attr(href)"
+      }
+    },
+    "content": {
+      "list": "id(content)",
+      "cleanTail": "replace('手机用户[^<]*阅读体验。','').replace('推荐[^<]*新书:[^<]*<a[^>]*>[^<]*</a>','').replace('推荐[^<]*新书[^<]*','')"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "legado-f1ed941496",
+    "name": "思路客",
+    "host": "http://m.isiluke.la",
+    "type": "html",
+    "enabled": true,
+    "note": "阅读共享书源｜手机站，目录走 all.html；命中结果偏少",
+    "search": {
+      "url": "http://m.isiluke.la/SearchBook.php?keyword={key}",
+      "list": "class(hot_sale)",
+      "fields": {
+        "title": "class(title).text.trim",
+        "url": "tag(a).nth(0).attr(href)",
+        "author": "class(author).nth(0).text.replace('作者：','').trim"
+      }
+    },
+    "chapter": {
+      "list": "id(chapterlist).tag(p).skip(1)",
+      "fields": {
+        "title": "tag(a).text",
+        "url": "tag(a).attr(href)"
+      },
+      "url": "{url}all.html"
+    },
+    "content": {
+      "list": "id(chaptercontent)",
+      "cleanTail": "replace('<div id=\"content_tip\">[\\s\\S]*?</div>','').replace('『加入书签，方便阅读』','').replace('（本章未完[^）]*）','')",
+      "nextPage": "re('<a[^>]*href=\"([^\"]*_\\d+\\.html)\"[^>]*id=\"pt_next\"',1)"
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "id": "legado-6c3ac6a98c",
+    "name": "梦书中文",
+    "host": "http://www.mcmssc.la",
+    "type": "html",
+    "enabled": true,
+    "note": "阅读共享书源｜「最新章节」块已裁掉，报送提示已清",
+    "search": {
+      "url": "http://www.mcmssc.la/search.html?name={key}",
+      "list": "id(main).tag(div).class(novelslist2).tag(ul).tag(li)",
+      "fields": {
+        "title": "class(s2).tag(a).text",
+        "url": "class(s2).tag(a).attr(href)",
+        "author": "class(s4).tag(a).text"
+      }
+    },
+    "chapter": {
+      "list": "id(list).re('正文</dt>([\\s\\S]*)',1).tag(dd)",
+      "fields": {
+        "title": "tag(a).text",
+        "url": "tag(a).attr(href)"
+      }
+    },
+    "content": {
+      "list": "id(content)",
+      "cleanTail": "replace('天才一秒记住本站地址：[^<]*','').replace('章节错误[\\s\\S]{0,160}?请耐心等待。','')"
+    }
+  }
+]

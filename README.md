@@ -62,6 +62,7 @@
 - **已移除番茄 / 七猫源**（2026-11-21）：七猫网页端只开放前若干章，后段要在七猫 App 内开通会员才给读；番茄重复条目多、章节接口经常挂住（实测单条 25s+ 不返回）。两者对「下载全本」帮助都很小，还会拖慢搜索与章节统计，已从内置书源里去掉。实现代码（`FanqieSource` / `QimaoSource`）保留，需要时把源条目加回 `SourceStore.fallbackSources` 即可。
 - **内置公版书源**：殆知阁古籍（1.5 万+ 本经史子集、四大名著、诗词小说、中医典籍）。书目随 App 打包（本地即时搜索、无 API 限流），正文从 jsDelivr/raw CDN 下载，大陆可达。
 - **内置笔趣阁源**（`bqg-92xs`，就爱文学）：纯静态 HTML 抓取的书源示例，规则见 `docs/sources/bqg-92xs.json`。站点域名易变，失效时可在书源管理页编辑 host 或导入新规则。
+- **内置「阅读」共享书源包**（2026-11-21）：把社区流传的 941 条「阅读 3.0」书源跑了一遍转换器，只有规则能用 CSS 选择器表达的那部分能转（340 条），按站点去重后 314 条，联网三阶段实测（搜索 → 目录 → 正文）最终留下 **9 个稳定可用的静态站**，随 App 打包在 `iRead/Resources/sources_legado.json`。它们大多是笔趣阁同模板站，一本书在不同站点的可下章数差别很大（例如《剑来》在 00小说网 1093 章、其余几家 1311 章），正好用来比「哪个源能下全本」。正文/目录里常见的站点广告（最新网址、天才一秒记住、章节报错提示、「最新章节」区块）已在规则里清掉；站点的域名迁移也一并修正。
 - **书源可导入/可编辑**：书源管理页支持粘贴或选择 JSON 导入自定义书源，内置源可禁用；规则格式见下方「书源规则格式」。
 - **使用声明**：仅供个人学习、禁止传播、禁止批量、看完即删、责任自担。本项目自带内容均为公版/原创；第三方书源（含笔趣阁）仅提供抓取能力，内容来源由使用者自行判断并承担相应责任。该声明在书籍详情页与设置页常驻；搜书页首次进入时完整展示，搜索后收进顶栏的 ⓘ 按钮（点开即看），把屏幕让给结果列表。
 - **边下边读**：点「下载全书」后书**立即进入书架**（占位），正文分批抓取、抓完一批写一批 —— 下几章就能先读几章，不必等整本下完。进度直接显示在书架封面与「下载任务」页，可随时**暂停 / 继续 / 取消**，取消保留已下章节。下载完成后自动跳到书架。
@@ -108,10 +109,30 @@
 ```
 
 - 占位符：`{key}` 关键词、`{url}` 上一步的链接、`{host}` 站点主页、`{page}` 页码。
-- 选择器用点链式 DSL（纯 Foundation 实现，无需第三方库）：`tag(x)` / `class(x)` / `id(x)` / `attr(x)` / `re('正则',组号)` / `text` / `entity` / `trim` / `replace('a','b')` / `drop('正则')` / `json(路径)`。
+- 选择器用点链式 DSL（纯 Foundation 实现，无需第三方库）：`tag(x)` / `class(x)` / `id(x)` / `attr(x)` / `re('正则',组号)` / `text` / `entity` / `trim` / `replace('a','b')` / `drop('正则')` / `skip(n)` / `nth(n)` / `first` / `last` / `join('分隔符')` / `json(路径)`。
+- `skip(n)` 跳过前 n 项，用来去掉表格表头、「↓直达页面底部↓」这类干扰行；`cleanTail` 里可以用同一套算子对每段正文做清洗（例如 `replace('最新网址：\\S+','')`）。
 - `type: "json"` 时，`list` 与 `fields` 的值改为 JSON 键路径（如 `data.books[*]`、`title`）。
 - `content` 支持 `page` 分页（`start`/`max`/`step`）与 `join` 拼接符。
+- 搜索结果是**先按详情页地址去重、再按关键词过滤**（书名或作者含关键词），单源最多取 30 条 —— 模板站的搜索页会把同分类推荐一起返回，不过滤的话多书源会把要找的书淹没；一条都没命中时退回完整列表，不会把作者名/别名搜索过滤成空。
 - 内置的 GitHub 公版源用专用 `kind: "github"`，不走通用规则解析。
+
+### 书源工具（`tools/`）
+
+两个脚本都是「一次性研究 + 可复跑」，不参与 App 构建：
+
+```bash
+# 1) 把「阅读 3.0」共享书源批量转成 iRead 规则，并打印跳过原因统计
+python3 tools/legado-import/convert.py shareBookSource.json /tmp/iread-legado.json
+
+# 2) 用 App 真实选择器引擎做联网三阶段自检（搜索 → 目录 → 正文），不依赖模拟器
+swiftc -O -parse-as-library iRead/Models/NovelModels.swift \
+  iRead/Services/SelectorEngine.swift iRead/Services/WebText.swift \
+  iRead/Services/NovelHTTPClient.swift tools/legado-verify/*.swift -o /tmp/legado-verify
+/tmp/legado-verify /tmp/iread-legado.json 剑来 /tmp/report.json
+```
+
+`legado-verify` 直接编译 App 里的 `SelectorEngine` / `WebText` / `NovelHTTPClient`，验证结果与真机一致，
+不会出现「Python 模拟能跑、App 跑不通」的偏差；`report.json` 里会带上每条的章节数、正文长度与首尾片段。
 
 ## 工程结构
 
@@ -132,6 +153,10 @@ iRead/
                 GitHubBookSource（内置公版书源）、FanqieSource / QimaoSource（已停用，保留）、
                 NovelDownloadManager（下载入库）、
                 SourceStore（书源仓库）、AccountStore（登录 Cookie，Keychain）
+  Resources/    sources_legado.json（「阅读」共享书源转换出的 9 个静态站，随包内置）
+tools/
+  legado-import/convert.py         「阅读 3.0」书源 → iRead 规则的批量转换器
+  legado-verify/                   macOS 命令行自检（复用 App 选择器引擎联网跑三阶段）
 Vendor/booklists/  殆知阁 1.5 万本公版书目（随包，本地搜索）
   Views/        Bookshelf、Import、Reader、ChapterList、ReaderSettings、Bookmarks、Settings
                 NovelSearch（搜书）、NovelDetail（详情/下载）、SourceManager（书源管理）、
