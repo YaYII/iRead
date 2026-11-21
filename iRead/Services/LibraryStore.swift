@@ -136,8 +136,10 @@ final class LibraryStore: ObservableObject {
     ) -> Book {
         let id = UUID().uuidString
         let fileName = "\(id).txt"
-        // 先写一行书名占位，TextParser 至少能解析出「正文」一节，打开不会空白
-        let seed = "\(title)\n\n"
+        // 从空文件起步。以前这里先写一行书名占位，导致正文第一行是书名，
+        // 目录解析会多出一个「开篇」章节（章数比实际多 1、点进去只有书名）。
+        // 空文件时阅读器拿到的是一个空白「第 1 节」，第一批章节到了就有内容。
+        let seed = ""
         try? (seed.data(using: .utf8) ?? Data()).write(to: booksDir.appendingPathComponent(fileName))
         let book = Book(
             id: id,
@@ -165,25 +167,61 @@ final class LibraryStore: ObservableObject {
 
     /// 把一批已抓到的章节追加进占位书，并立即刷新书架/阅读器。
     /// 每章写成「标题 + 正文」，TextParser 下次打开会按「第X章」重新切目录。
+    ///
+    /// 性能要点：**只追加、不重读全书**。早先的实现每批都要
+    /// 「读全文 → 字符串拼接 → `.atomic` 全量重写 → 全文 TextParser.parse」，
+    /// 一本 1300 章的书（每批 4 章 = 325 批）就是 325 次全量 I/O 加 325 次全文正则解析，
+    /// 整体 O(n²)。下载时 CPU/IO 长时间打满，机身发热、掉电明显。
     func appendChapters(to bookID: String, chapters: [(title: String, text: String)]) {
         guard let book = self.book(bookID), !chapters.isEmpty else { return }
         let url = booksDir.appendingPathComponent(book.fileName)
-        var existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-        var addedBytes = 0
+
+        var payload = ""
         for chapter in chapters {
-            let block = "\(chapter.title)\n\n\(chapter.text)\n\n"
-            existing += block
-            addedBytes += block.utf8.count
+            payload += "\(chapter.title)\n\n\(chapter.text)\n\n"
         }
-        guard let data = existing.data(using: .utf8) else { return }
-        try? data.write(to: url, options: .atomic)
+        // 按「真正写进文件的行」统计章数，而不是拿标题字符串去判断：
+        // 个别站点标题里会混进换行/异常空白，字符串判定和落盘后的行判定会差一条，
+        // 章数就会永远对不上。这里和 TextParser 用同一套行扫描口径。
+        let recognized = payload.split(separator: "\n").reduce(into: 0) { count, line in
+            if TextParser.isChapterTitle(String(line)) { count += 1 }
+        }
+        guard let data = payload.data(using: .utf8), appendFile(data, to: url) else { return }
 
         // 清掉这本书的正文缓存，阅读器下次进入会重新解析出新增章节
-        cache[bookID] = nil
-        let parsed = TextParser.parse(data)
-        mutate(bookID) {
-            $0.chapterCount = parsed.chapters.count
-            $0.fileSize = Int64(data.count)
+        let added = Int64(data.count)
+        let update = {
+            // 缓存与 @Published 都只在主线程动：content(for:) 在主线程读 cache，
+            // 后台直接写字典会有并发读写风险
+            self.cache[bookID] = nil
+            self.mutate(bookID) {
+                // 章数按标题增量累加，不再为每批做一次全文解析；
+                // 下载结束的 finalizeStreamingBook 会做一次全量校准。
+                $0.chapterCount += recognized
+                $0.fileSize += added
+            }
+        }
+        // onBatch 在下载 Task 里回调，@Published 必须回主线程改
+        if Thread.isMainThread { update() } else { DispatchQueue.main.async(execute: update) }
+    }
+
+    /// 末尾追加写。文件不存在时直接创建。
+    private func appendFile(_ data: Data, to url: URL) -> Bool {
+        if !fm.fileExists(atPath: url.path) {
+            return (try? data.write(to: url)) != nil
+        }
+        guard let handle = try? FileHandle(forWritingTo: url) else {
+            NSLog("[Library] open failed: %@", url.lastPathComponent)
+            return false
+        }
+        defer { try? handle.close() }
+        do {
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+            return true
+        } catch {
+            NSLog("[Library] append failed: %@", error.localizedDescription)
+            return false
         }
     }
 
@@ -192,13 +230,17 @@ final class LibraryStore: ObservableObject {
         guard let book = self.book(bookID) else { return }
         let url = booksDir.appendingPathComponent(book.fileName)
         guard let data = try? Data(contentsOf: url) else { return }
+        // 全量解析只做这一次（下载结束时校准章数），放到后台，别卡主线程
         let parsed = TextParser.parse(data)
-        cache[bookID] = nil
-        mutate(bookID) {
-            // 抓到的章数可能少于预期（锁章被跳过），以实际落盘为准
-            $0.chapterCount = parsed.chapters.count
-            $0.fileSize = Int64(data.count)
+        let update = {
+            self.cache[bookID] = nil
+            self.mutate(bookID) {
+                // 抓到的章数可能少于预期（锁章被跳过），以实际落盘为准
+                $0.chapterCount = parsed.chapters.count
+                $0.fileSize = Int64(data.count)
+            }
         }
+        if Thread.isMainThread { update() } else { DispatchQueue.main.async(execute: update) }
         _ = expectedChapters
     }
 

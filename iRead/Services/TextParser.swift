@@ -14,11 +14,24 @@ enum TextParser {
     // 第X章 / 卷X / Chapter N / 序章 / 楔子 / 番外 等
     private static let chapterPattern = #"^(?:第\s*[零〇一二三四五六七八九十百千万两0-9０-９]{1,12}\s*[章回节卷部篇集](?:\s*[^\n]{0,40})?|卷\s*[零〇一二三四五六七八九十百千万0-9０-９]{1,8}[^\n]{0,30}|Chapter\s+\d+[^\n]{0,40}|CHAPTER\s+\d+[^\n]{0,40}|序章|楔子|前言|引言|后记|尾声|番外[^\n]{0,20})$"#
 
+    /// 编译一次复用。`parse` 每次打开书都会跑，下载时也要逐章判断标题，
+    /// 不能每次都 `try NSRegularExpression(...)`。
+    private static let chapterRegex = try? NSRegularExpression(pattern: chapterPattern, options: [])
+
+    /// 单行是否构成章节标题（与 `parse` 的判定完全一致）。
+    /// 流式下载靠它增量累计章数，避免每批都全文重解析。
+    static func isChapterTitle(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.utf16.count <= 48 else { return false }
+        let range = NSRange(location: 0, length: trimmed.utf16.count)
+        return chapterRegex?.firstMatch(in: trimmed, options: [], range: range) != nil
+    }
+
     static func parse(_ data: Data) -> ParsedBook {
         let normalized = normalize(decode(data))
         let ns = normalized as NSString
         let lines = splitLines(ns)
-        let regex = try? NSRegularExpression(pattern: chapterPattern, options: [])
+        let regex = chapterRegex
 
         var titles: [(Int, String)] = []
         for (offset, line) in lines {

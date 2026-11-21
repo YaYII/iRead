@@ -144,6 +144,9 @@ final class NovelDownloadManager: ObservableObject {
                 detail: detail,
                 source: source,
                 batch: batch,
+                // 断点续传：失败/取消后重试时，前面这些章已落盘，从断点继续。
+                // 以前这里没传，重试会把整本从头再下一遍（重复正文 + 白烧流量和电）。
+                startAt: written,
                 onBatch: { [weak self] startIndex, chapters in
                     guard let self else { return }
                     // 逐章写入占位书：下几章就能读几章

@@ -219,6 +219,7 @@ enum NovelFetcher {
 
     /// 流式抓章：按章节顺序抓取并回调，供「边下边读」使用。
     /// - parameter batch: 每批章数，抓完一批立即回调一次（含该批所有章节文本）
+    /// - parameter startAt: 从这里开始抓（断点续传用；前面的章节已经落盘，别重复抓）
     /// - parameter onBatch: 回调批次序号起点与章节文本；按顺序串行回调
     /// - parameter shouldPause: 返回 true 时暂停在下批之前等待（用于暂停/继续）
     /// - parameter shouldStop: 返回 true 时提前结束（取消）
@@ -226,6 +227,7 @@ enum NovelFetcher {
         detail: NovelDetail,
         source: NovelSource,
         batch: Int = 4,
+        startAt: Int = 0,
         onBatch: @escaping (Int, [(title: String, text: String)]) -> Void,
         shouldPause: @escaping () -> Bool,
         shouldStop: @escaping () -> Bool,
@@ -233,6 +235,8 @@ enum NovelFetcher {
     ) async throws {
         // GitHub 公版源是整本 txt，没有逐章结构，直接一次性给一章，由阅读器自己分章
         if source.kind?.lowercased() == "github" {
+            // 整本一次性写入，已经下过就别再下一遍
+            guard startAt <= 0 else { return }
             if shouldStop() { throw FetchError.cancelled }
             let data = try await GitHubBookSource.fullText(detail: detail)
             guard let text = String(data: data, encoding: .utf8) else { throw FetchError.encode }
@@ -241,7 +245,7 @@ enum NovelFetcher {
         }
 
         let chapters = detail.chapters
-        var next = 0
+        var next = min(max(0, startAt), chapters.count)
         while next < chapters.count {
             if shouldStop() { throw FetchError.cancelled }
             // 暂停：在批次边界等待，不丢已抓章节

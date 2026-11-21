@@ -88,7 +88,11 @@ final class SpeechService: NSObject, ObservableObject {
     override init() {
         super.init()
         synthesizer.delegate = self
-        activateAudioSession()
+        // 注意：这里**不能**激活音频会话。
+        // `SpeechService.shared` 在 App 启动时就被 ListeningCenter 持有，
+        // 若在 init 里 setActive(true)，等于一开机就占住音频硬件 + 后台音频通道
+        // （配合 Info.plist 的 UIBackgroundModes=audio），既会 duck 掉别的 App，
+        // 又让进程长期不被挂起 —— 待机耗电的主因之一。改成首次真正要发声时再激活。
         observeInterruptions()
     }
 
@@ -245,6 +249,8 @@ final class SpeechService: NSObject, ObservableObject {
 
     func resume() {
         guard isActive, isPaused else { return }
+        // 会话可能已被系统或我们自己释放（中断、长时间暂停），恢复前补一次激活
+        activateAudioSession()
         if activeEngine == .piper {
             ensureAudioEngine()
             if !player.isPlaying { player.play() }
@@ -264,12 +270,14 @@ final class SpeechService: NSObject, ObservableObject {
 
     func stop() {
         trace("stop() called, isActive=\(isActive) caller=\(Thread.callStackSymbols.dropFirst().prefix(6).joined(separator: " <- "))")
-        guard isActive else { return }
-        haltPlayback()
+        if isActive { haltPlayback() }
         isActive = false
         isPaused = false
         isSpeaking = false
         onAdvance = nil
+        // 停止后必须把音频会话交还系统：否则 App 会一直挂着 playback 会话，
+        // 屏幕熄灭后进程仍按「后台放音」保活，夜里待机也在掉电。
+        deactivateAudioSession()
         trace("stop() -> isActive=false")
     }
 
@@ -367,6 +375,13 @@ final class SpeechService: NSObject, ObservableObject {
             for (i, text) in queue.enumerated() {
                 // 令牌失效（用户停止/换段）就提前退出
                 if PiperSynthesizer.shared.currentToken() != token { return }
+                // 暂停时不再往后预合成。否则一章 3000 字会被整章算完，
+                // 用户一暂停就是几十分钟，这期间 CPU 白烧、机身发热。
+                // 恢复播放后从这里继续，队列里还留着已合成的几句，不会卡顿。
+                while self.isPaused {
+                    if PiperSynthesizer.shared.currentToken() != token { return }
+                    Thread.sleep(forTimeInterval: 0.2)
+                }
                 guard let result = PiperSynthesizer.shared.synthesize(
                     text: text, speed: speed, model: model, token: token
                 ) else { continue }
@@ -539,10 +554,40 @@ final class SpeechService: NSObject, ObservableObject {
 
     // MARK: - 音频会话与中断
 
+    /// 音频会话是否由我们持有（成对 setActive(true/false)，避免重复 activate）
+    private var sessionActive = false
+
     private func activateAudioSession() {
         let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-        try? session.setActive(true, options: [])
+        if !sessionActive {
+            try? session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+        }
+        guard !sessionActive else { return }
+        do {
+            try session.setActive(true, options: [])
+            sessionActive = true
+        } catch {
+            log.error("audio session activate failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// 释放音频硬件与会话。空闲时不再占用音频通道，App 才能正常进入挂起。
+    private func deactivateAudioSession() {
+        // 先停播放器与引擎，再交还会话：会话释放时若引擎还在跑，
+        // iOS 会把它重新拉起来，等于白释放
+        if audioReady {
+            player.stop()
+            if audioEngine.isRunning { audioEngine.stop() }
+        }
+        guard sessionActive else { return }
+        do {
+            try AVAudioSession.sharedInstance()
+                .setActive(false, options: [.notifyOthersOnDeactivation])
+            sessionActive = false
+        } catch {
+            // 还在放音时可能失败；下一次 stop 会再试一次
+            log.error("audio session deactivate failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func observeInterruptions() {
@@ -563,11 +608,17 @@ final class SpeechService: NSObject, ObservableObject {
               let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
         DispatchQueue.main.async {
             if type == .began {
+                // 系统中断（来电等）会自行把会话置为 inactive，这里同步状态，
+                // 否则中断结束后以为「还持有会话」，再播放就没声音。
+                self.sessionActive = false
                 self.pause()
             } else if type == .ended,
                       let optRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt {
                 let options = AVAudioSession.InterruptionOptions(rawValue: optRaw)
-                if options.contains(.shouldResume) { self.resume() }
+                if options.contains(.shouldResume) {
+                    self.activateAudioSession()
+                    self.resume()
+                }
             }
         }
     }
