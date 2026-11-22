@@ -1,5 +1,24 @@
 import SwiftUI
 
+/// 录演示视频用的步进间隔。
+///
+/// 自测参数原本是「0.4 秒后自动打开」，跑起来一闪而过，录屏根本看不清。
+/// `--demo-pace 4` 把每一步拉到 4 秒，让界面停够时间再走下一步；
+/// 不传这个参数时行为完全不变。
+enum Demo {
+    static var pace: TimeInterval {
+        let args = ProcessInfo.processInfo.arguments
+        guard let index = args.firstIndex(of: "--demo-pace"), index + 1 < args.count,
+              let value = Double(args[index + 1]), value > 0 else { return 0 }
+        return value
+    }
+
+    /// 有 pace 就按 pace 走，没有就用原来的默认延迟
+    static func step(_ base: TimeInterval) -> TimeInterval {
+        pace > 0 ? pace : base
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject private var store: LibraryStore
     @EnvironmentObject private var settings: ReaderSettings

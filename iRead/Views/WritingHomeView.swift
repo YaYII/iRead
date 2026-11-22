@@ -281,7 +281,7 @@ struct WritingHomeView: View {
         }
         // 仅供截图：直接打开最近一本
         if args.contains("--open-writing"), let first = writing.projects.first {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { path = [first.id] }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Demo.step(0.4)) { path = [first.id] }
         }
     }
 }

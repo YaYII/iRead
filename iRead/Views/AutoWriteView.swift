@@ -448,7 +448,7 @@ struct AutoWriteSheet: View {
         }
         planFirst = !args.contains("--no-plan")
         continueOnFail = args.contains("--auto-continue")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + Demo.step(0.6)) {
             mode = .run
             pipeline.start(projectID: projectID, chapters: chapters, planFirst: planFirst, continueOnFail: continueOnFail)
         }

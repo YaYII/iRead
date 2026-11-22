@@ -581,11 +581,10 @@ struct WritingEditorView: View {
         if args.contains("--open-chapter"), let first = project.segments.first {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { editingSegment = first }
         }
-        if args.contains("--open-auto") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { showAutoWrite = true }
-        }
-        if args.contains("--auto-write") || args.contains("--open-outline") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+        if args.contains("--open-auto") || args.contains("--auto-write") || args.contains("--open-outline") {
+            // 注意别分成两个 asyncAfter：--auto-write 那条若仍用固定 0.4 秒，
+            // 会把 --open-auto 排的 4 秒（录屏时）抢先覆盖掉，面板一闪就出来。
+            DispatchQueue.main.asyncAfter(deadline: .now() + Demo.step(0.4)) {
                 if args.contains("--open-outline") { showOutline = true } else { showAutoWrite = true }
             }
         }

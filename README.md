@@ -205,7 +205,7 @@
 - **429 / 5xx 会退避重试**（6 秒、18 秒各一次）；Key 错、模型名错这类重试没用，直接报错
 - **从某章重写**有两个粒度：长按章节卡 →「重写本章」只替换这一章、保留位置（后面章节都建立在这一章发生过的事上，所以它只改写法不改事件）；「从这一章往后重写」会把这章及之后全部删掉重来，删前有确认，且会尽量沿用原来的章纲
 
-跑起来长这样：
+跑起来长这样（从左到右：开跑前、跑的时候、跑完）。**完整交互录屏 43 秒：[writing-demo.mp4](docs/screenshots/writing-demo.mp4)** —— 写作列表 → 章节卡 → 连写设置 → 排章纲 → 动笔前构思 → 流式落笔 → 送审 → 跑完，每步都有字幕；写正文那段是加速的（画面上标了倍数）。
 
 <img src="docs/screenshots/36-auto-write-config.png" width="230" alt="开跑前：章数、先排章纲、没过审也接着写、故事大纲">
 <img src="docs/screenshots/37-auto-write-run.png" width="230" alt="跑的时候：一边流式显示正文，一边记流水账">
@@ -442,6 +442,7 @@ xcodebuild -project iRead.xcodeproj -scheme iRead \
 - `--auto-chapters 2`：连写章数（默认 5）
 - `--no-plan`：连写时跳过「先排章纲」
 - `--auto-continue`：连写时勾上「没过审也接着写」
+- `--demo-pace 4`：把上面这些「延迟 N 秒自动点下一步」的延迟统一拉长到 4 秒，录屏时每一步才停得住；不传则行为不变。录屏用的是 `--writing --open-writing --open-auto --auto-write --demo-pace 4`
 - `--open-outline`：直接打开大纲编辑器
 - `--seed-outline "……"`：给 `--seed-writing` 造出来的样本稿塞一份大纲（测「照着大纲写」）
 - `--export-writing`：进编辑器后自动导出 TXT，并打印沙盒路径
