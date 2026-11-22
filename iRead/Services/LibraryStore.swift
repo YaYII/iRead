@@ -133,7 +133,8 @@ final class LibraryStore: ObservableObject {
         title: String,
         author: String = "",
         totalChapters: Int,
-        source: String
+        source: String,
+        remoteURL: String
     ) -> Book {
         let id = UUID().uuidString
         let fileName = "\(id).txt"
@@ -156,7 +157,10 @@ final class LibraryStore: ObservableObject {
             coverHue: Double(books.count % 8) / 8.0 + 0.04,
             isPinned: false,
             isFinished: false,
-            source: source
+            source: source,
+            remoteURL: remoteURL,
+            // 下载归档一起落盘：闪退后启动时靠它把没下完的书重新排回队列
+            download: BookDownload(state: DownloadStatus.queued.rawValue, total: totalChapters)
         )
         var list = books
         list.insert(book, at: 0)
@@ -191,6 +195,7 @@ final class LibraryStore: ObservableObject {
 
         // 清掉这本书的正文缓存，阅读器下次进入会重新解析出新增章节
         let added = Int64(data.count)
+        let fetched = chapters.count
         let update = {
             // 缓存与 @Published 都只在主线程动：content(for:) 在主线程读 cache，
             // 后台直接写字典会有并发读写风险
@@ -200,6 +205,13 @@ final class LibraryStore: ObservableObject {
                 // 下载结束的 finalizeStreamingBook 会做一次全量校准。
                 $0.chapterCount += recognized
                 $0.fileSize += added
+                // 续传起点跟着同一次写盘一起更新（不额外多一次 I/O）。
+                // 用「抓到了几章」而不是 recognized：标题不规范时 recognized 会少算，
+                // 拿它当断点会把几章重复写进文件。
+                var record = $0.download
+                    ?? BookDownload(state: DownloadStatus.fetching.rawValue, total: 0)
+                record.fetched += fetched
+                $0.download = record
             }
         }
         // onBatch 在下载 Task 里回调，@Published 必须回主线程改
@@ -243,6 +255,32 @@ final class LibraryStore: ObservableObject {
         }
         if Thread.isMainThread { update() } else { DispatchQueue.main.async(execute: update) }
         _ = expectedChapters
+    }
+
+    // MARK: - 下载归档（断点续传的落盘依据）
+
+    /// 状态变化时落盘。只在**状态切换**调用（排队 / 开跑 / 暂停 / 完成 / 失败），
+    /// 进度不单独写 —— 它就是 chapterCount，appendChapters 已经每批存过一次了。
+    /// 这样下载过程中不会多出任何一次额外的全量写盘。
+    func setDownloadState(bookID: String, state: DownloadStatus, total: Int? = nil) {
+        mutateOnMain(bookID) { book in
+            var record = book.download
+                ?? BookDownload(state: state.rawValue, total: total ?? book.chapterCount)
+            record.state = state.rawValue
+            if let total { record.total = total }
+            record.updatedAt = Date()
+            book.download = record
+        }
+    }
+
+    /// 回源核对过目录：记一笔时间，供节流判断（默认 6 小时内不再重复查同一本）
+    func markDownloadChecked(bookID: String, total: Int) {
+        mutateOnMain(bookID) { book in
+            var record = book.download ?? BookDownload(state: "", total: total)
+            record.total = total
+            record.checkedAt = Date()
+            book.download = record
+        }
     }
 
     func delete(book: Book) {

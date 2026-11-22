@@ -59,6 +59,11 @@ struct BookshelfView: View {
     @State private var showDeleteConfirm = false
     @State private var bookToDelete: Book?
 
+    /// 「检查更新」的手动结果提示（自动续传是静默的，不打扰阅读）
+    @State private var updateNotice: String?
+    @State private var showUpdateNotice = false
+    @State private var checkingBookID: String?
+
     init(
         onOpenBook: @escaping (Book) -> Void = { _ in },
         onListenBook: @escaping (Book) -> Void = { _ in },
@@ -192,6 +197,11 @@ struct BookshelfView: View {
             Button("取消", role: .cancel) { bookToDelete = nil }
         } message: {
             Text("书籍文件、阅读进度与书签将一并移除，且无法恢复。")
+        }
+        .alert("检查更新", isPresented: $showUpdateNotice) {
+            Button("好", role: .cancel) { }
+        } message: {
+            Text(updateNotice ?? "")
         }
     }
 
@@ -531,10 +541,18 @@ struct BookshelfView: View {
                         .font(.system(size: 10))
                         .foregroundStyle(settings.theme.secondary)
                         .lineLimit(1)
-                    Text("共 \(book.chapterCount) 章 · 已读 \(book.progressPercent)")
-                        .font(.system(size: 10))
-                        .foregroundStyle(settings.theme.secondary)
-                        .lineLimit(1)
+                    // 网络书下到一半：显示实际缺口，别只写「共 N 章」让人以为已经全本
+                    if book.missingChapters > 0 {
+                        Text("已下 \(book.downloadedChapters)/\(book.download?.total ?? 0) 章 · 还差 \(book.missingChapters) 章")
+                            .font(.system(size: 10))
+                            .foregroundStyle(settings.theme.accent)
+                            .lineLimit(1)
+                    } else {
+                        Text("共 \(book.chapterCount) 章 · 已读 \(book.progressPercent)")
+                            .font(.system(size: 10))
+                            .foregroundStyle(settings.theme.secondary)
+                            .lineLimit(1)
+                    }
                 }
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right")
@@ -650,6 +668,28 @@ struct BookshelfView: View {
                     }
                 }
                 .frame(height: 2.5)
+            }
+
+            // 网络书没下完：封面上直接标「还差几章」。
+            // 只在没有下载任务盖着的时候看得见；有任务时进度层会盖住这里，
+            // 那边显示的是「下载中 x%」，信息不重复。
+            if showsBadges, !book.isComic, book.missingChapters > 0 {
+                VStack {
+                    Spacer(minLength: 0)
+                    HStack {
+                        Text("还差 \(book.missingChapters) 章")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1.5)
+                            .background(Capsule().fill(Color.black.opacity(0.45)))
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.bottom, 6)
+                }
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -819,6 +859,29 @@ struct BookshelfView: View {
 
     // MARK: - 长按菜单
 
+    /// 手动核对更新。
+    /// 本地已知有缺口（`missingChapters > 0`）就不必再等一次目录请求，直接接着下；
+    /// 否则回源查一次，有新章就自动排进队列 —— 全本也只多这一次请求。
+    @MainActor
+    private func checkUpdates(for book: Book) {
+        let hasActive = downloadManager.task(forBookID: book.id)?.isActive == true
+        guard !hasActive else { return }
+        if book.missingChapters > 0 {
+            downloadManager.continueDownload(book.id)
+            return
+        }
+        checkingBookID = book.id
+        Task { @MainActor in
+            let added = await downloadManager.checkForUpdates(bookID: book.id)
+            checkingBookID = nil
+            let total = store.book(book.id)?.chapterCount ?? book.chapterCount
+            updateNotice = added > 0
+                ? "发现 \(added) 章新内容，已加入下载队列。"
+                : "已是最新（共 \(total) 章）。"
+            showUpdateNotice = true
+        }
+    }
+
     @ViewBuilder
     private func contextMenuItems(for book: Book) -> some View {
         if book.isComic {
@@ -832,6 +895,19 @@ struct BookshelfView: View {
                 onListenBook(book)
             } label: {
                 Label("听书", systemImage: "headphones")
+            }
+            // 网络书：手动回源核对一次目录。有缺口就直接接着下，
+            // 没有缺口才发一次请求；全本也不会再提示「未下完」。
+            if book.remoteURL != nil {
+                Button {
+                    checkUpdates(for: book)
+                } label: {
+                    Label(
+                        book.missingChapters > 0 ? "继续下载还差 \(book.missingChapters) 章" : "检查更新",
+                        systemImage: "arrow.triangle.2.circlepath"
+                    )
+                }
+                .disabled(checkingBookID == book.id)
             }
         }
         Button {

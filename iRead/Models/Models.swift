@@ -69,12 +69,86 @@ struct Book: Identifiable, Codable, Hashable {
     /// 网络来源标识（`书源id|详情地址`）。漫画用它判断「这本书是不是已经在书架里」，
     /// 不用为了比对一个地址去解析整份 meta.json。
     var remoteKey: String? = nil
+    /// 网络书详情页地址（书源的 detailURL）。
+    ///
+    /// 以前这个地址只活在下载器的内存里：闪退/重启后书架上那本半成品既不知道该从哪回源，
+    /// 也不知道自己下到第几章，只能整本重下。落盘之后，「这本书从哪来」变成书的属性，
+    /// 续传、查更新、判断是否全本都有依据。
+    var remoteURL: String? = nil
+    /// 下载归档（仅网络书）。nil = 本地导入 / 内置示例书，从没走过下载。
+    var download: BookDownload? = nil
 
     var isComic: Bool { kind == "comic" }
 
     var displayAuthor: String { author.trimmingCharacters(in: .whitespaces).isEmpty ? "佚名" : author }
     var progressPercent: String { String(format: "%.1f%%", min(1, max(0, progress)) * 100) }
     var isRead: Bool { lastReadAt != nil }
+
+    /// 下载状态；没走过下载的书是 nil
+    var downloadState: DownloadStatus? {
+        guard let raw = download?.state else { return nil }
+        return DownloadStatus(rawValue: raw)
+    }
+
+    /// 续传起点：已经写进文件的章数。
+    ///
+    /// 优先用归档里的 `fetched`（按抓取批次累加）而不是 `chapterCount`（按标题识别出来的）：
+    /// 个别站点标题不规范时 `TextParser` 认不出那么多章，拿 `chapterCount` 当起点
+    /// 会把几章重复写进文件。取两者较大值，老归档（没有 fetched）和识别偏少两种情况都兜住。
+    var downloadedChapters: Int {
+        guard let record = download, record.fetched > 0 else { return chapterCount }
+        return max(record.fetched, chapterCount)
+    }
+
+    /// 书源目录比本地多出来的章数。0 = 已是最新（不知道总数时也按 0 处理）
+    var missingChapters: Int {
+        guard let total = download?.total, total > downloadedChapters else { return 0 }
+        return total - downloadedChapters
+    }
+}
+
+/// 网络书的下载归档。
+///
+/// 为什么不另开一个 `download_tasks.json`：这些信息与书一一对应，而 `library.json`
+/// 本来每批章节就要写一次（`appendChapters` 要更新 chapterCount），挂在 Book 上
+/// 等于零额外 I/O；单独维护一张任务表反而要处理两边不同步、书删了任务还在之类的清理。
+struct BookDownload: Codable, Hashable {
+    /// `DownloadStatus.rawValue`
+    var state: String
+    /// 书源目录里的总章数
+    var total: Int
+    /// 已按抓取批次写进文件的章数（断点续传的起点）
+    var fetched: Int
+    /// 最后一次状态变化时间
+    var updatedAt: Date
+    /// 最后一次回源核对目录的时间（节流用：别每次打开书都发一次请求）
+    var checkedAt: Date?
+
+    init(
+        state: String,
+        total: Int,
+        fetched: Int = 0,
+        updatedAt: Date = Date(),
+        checkedAt: Date? = nil
+    ) {
+        self.state = state
+        self.total = total
+        self.fetched = fetched
+        self.updatedAt = updatedAt
+        self.checkedAt = checkedAt
+    }
+
+    enum CodingKeys: String, CodingKey { case state, total, fetched, updatedAt, checkedAt }
+
+    /// 手写解码：字段将来增减时，老 library.json 不至于整份解不出来
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        state = try c.decodeIfPresent(String.self, forKey: .state) ?? ""
+        total = try c.decodeIfPresent(Int.self, forKey: .total) ?? 0
+        fetched = try c.decodeIfPresent(Int.self, forKey: .fetched) ?? 0
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date(timeIntervalSince1970: 0)
+        checkedAt = try c.decodeIfPresent(Date.self, forKey: .checkedAt)
+    }
 }
 
 // MARK: - 书签

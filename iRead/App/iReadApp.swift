@@ -24,6 +24,7 @@ struct iReadApp: App {
                     Self.runDownloadSelfTestIfRequested()
                     Self.runQueueSelfTestIfRequested()
                     Self.runComicQueueSelfTestIfRequested()
+                    Self.runResumeSelfTestIfRequested()
                 }
         }
     }
@@ -265,6 +266,187 @@ struct iReadApp: App {
                     await MainActor.run { store.delete(book: book) }
                 }
             }
+            log("cleanup removed \(created.count) test books")
+        }
+    }
+
+    /// 自检：`--resume-selftest` 验证「闪退后自动续传」。
+    ///
+    /// 复现方式（不用真的杀进程）：先按正常流程建书、只写入前 `--resume-seed` 章
+    /// （等价于下到一半被系统杀掉），状态留在「下载中」，然后让下载器
+    /// `debugReloadFromDisk()` 重新从磁盘恢复一次 —— 这跟重启 App 后的 `init` 走同一条路。
+    ///
+    /// 判定：
+    /// ① 续传起点 = 已写章数（不是 0，否则等于整本重下）；
+    /// ② 没有重复下载：`fetched` 等于目录章数，且**文件里第一章标题只出现 1 次**
+    ///    （从头重下的话这一章会被写第二遍）。注意不能拿 `chapterCount` 判 ——
+    ///    它是 `TextParser` 按标题识别出来的，站点标题不规范时会比实际少一两章；
+    /// ③ 暂停状态能活过重启（恢复后仍是暂停、不会自己开跑，章节数不动）。
+    ///
+    /// 结果落盘 `Documents/resume-selftest.txt`，跑完把测试书删掉。
+    private static func runResumeSelfTestIfRequested() {
+        let args = ProcessInfo.processInfo.arguments
+        guard args.contains("--resume-selftest") else { return }
+        func value(after flag: String) -> String? {
+            guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
+            return args[i + 1]
+        }
+        let keyword = value(after: "--resume-keyword") ?? "斗罗大陆"
+        let wantedSource = value(after: "--resume-source") ?? "bqg-92xs"
+        let totalChapters = value(after: "--resume-chapters").flatMap(Int.init) ?? 12
+        let seedChapters = value(after: "--resume-seed").flatMap(Int.init) ?? 4
+
+        Task.detached {
+            var lines: [String] = []
+            let started = Date()
+            func stamp() -> String { String(format: "+%6.1fs", Date().timeIntervalSince(started)) }
+            func flush() {
+                guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+                try? lines.joined(separator: "\n").write(
+                    to: dir.appendingPathComponent("resume-selftest.txt"),
+                    atomically: true,
+                    encoding: .utf8
+                )
+            }
+            func log(_ text: String) {
+                lines.append("\(stamp()) \(text)")
+                flush()
+            }
+            log("start keyword=\(keyword) source=\(wantedSource) total=\(totalChapters) seed=\(seedChapters)")
+
+            guard let source = SourceStore.shared.enabledSources.first(where: { $0.id == wantedSource }) else {
+                log("FAILED: 没有启用的书源 \(wantedSource)")
+                return
+            }
+            let dm = NovelDownloadManager.shared
+            let store = LibraryStore.shared
+            var created: [String] = []
+            // 恢复时会重新回源抓目录（这是真实行为），这里截断到同样的章数，
+            // 否则一本 700 章的书要下好几分钟才轮得到判定
+            await MainActor.run { dm.debugChapterLimit = totalChapters }
+
+            do {
+                let results = try await NovelFetcher.search(source: source, keyword: keyword)
+                guard results.count >= 2 else {
+                    log("FAILED: 结果不足两本（一本测续传、一本测暂停）")
+                    return
+                }
+                var details: [NovelDetail] = []
+                for result in results.prefix(2) {
+                    var detail = try await NovelFetcher.chapters(result: result, source: source)
+                    detail.chapters = Array(detail.chapters.prefix(totalChapters))
+                    details.append(detail)
+                    log("detail 《\(detail.title)》 chapters=\(detail.chapters.count)")
+                }
+
+                // 造现场：建书 + 只写前 seed 章 + 状态停在「下载中」
+                func seedHalfDownloaded(_ detail: NovelDetail) async throws -> String {
+                    let bookID: String = await MainActor.run {
+                        let book = store.createStreamingBook(
+                            title: detail.title,
+                            author: detail.author,
+                            totalChapters: detail.chapters.count,
+                            source: source.id,
+                            remoteURL: detail.detailURL
+                        )
+                        return book.id
+                    }
+                    var payload: [(title: String, text: String)] = []
+                    for chapter in detail.chapters.prefix(seedChapters) {
+                        let text = try await NovelFetcher.content(chapter: chapter, source: source)
+                        payload.append((chapter.title, text))
+                    }
+                    let batch = payload
+                    await MainActor.run {
+                        store.appendChapters(to: bookID, chapters: batch)
+                        store.setDownloadState(bookID: bookID, state: .fetching, total: detail.chapters.count)
+                    }
+                    return bookID
+                }
+
+                // 同名残留先清掉，保证从「一章没下」开始
+                for detail in details {
+                    for book in store.books where book.title == detail.title && !book.isComic {
+                        await MainActor.run {
+                            dm.dismiss(book.id)
+                            store.delete(book: book)
+                        }
+                    }
+                }
+
+                // MARK: 第一轮 · 下载到一半被闪退
+                let first = try await seedHalfDownloaded(details[0])
+                created.append(first)
+                let before = await MainActor.run { store.book(first) }
+                log("造现场 《\(details[0].title)》 已写=\(before?.downloadedChapters ?? -1) chapterCount=\(before?.chapterCount ?? -1) state=\(before?.downloadState?.rawValue ?? "-")")
+
+                await MainActor.run { dm.debugReloadFromDisk() }
+                let restored = await MainActor.run { dm.task(forBookID: first) }
+                log("恢复后 起点=\(restored?.completedChapters ?? -1) 总数=\(restored?.totalChapters ?? -1) 状态=\(restored?.status.rawValue ?? "nil")")
+
+                let deadline = Date().addingTimeInterval(240)
+                while Date() < deadline {
+                    let task = await MainActor.run { dm.task(forBookID: first) }
+                    guard let task else { break }
+                    if [.done, .failed, .cancelled].contains(task.status) {
+                        log("结束 \(task.status.rawValue) \(task.completedChapters)/\(task.totalChapters)")
+                        break
+                    }
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                }
+
+                let after = await MainActor.run { store.book(first) }
+                let expected = details[0].chapters.count
+                let chapters = after?.chapterCount ?? -1
+                let fetched = after?.download?.fetched ?? -1
+                // 是否重复下载，直接看文件里第一章标题出现了几次：
+                // 从 0 重下的话，这一章会被写第二遍。
+                let repeatCount: Int = await MainActor.run {
+                    guard let book = after,
+                          let body = try? String(
+                            contentsOf: store.booksDir.appendingPathComponent(book.fileName),
+                            encoding: .utf8
+                          ) else { return -1 }
+                    let title = details[0].chapters[0].title
+                    guard !title.isEmpty else { return -1 }
+                    return body.components(separatedBy: title).count - 1
+                }
+                let startOK = (restored?.completedChapters ?? -1) == seedChapters
+                // chapterCount 是「解析出来的章数」，个别标题站点写得怪会少算一两章，
+                // 不能拿它当唯一判据；抓取口径（fetched）和文件里有没有重复才是关键。
+                let noDuplicate = fetched == expected && repeatCount == 1
+                log("最终 落盘=\(chapters) fetched=\(fetched) 期望=\(expected) 首章重复=\(repeatCount) 次")
+
+                // MARK: 第二轮 · 暂停要能活过重启
+                let second = try await seedHalfDownloaded(details[1])
+                created.append(second)
+                await MainActor.run {
+                    store.setDownloadState(bookID: second, state: .paused, total: details[1].chapters.count)
+                    dm.debugReloadFromDisk()
+                }
+                let pausedTask = await MainActor.run { dm.task(forBookID: second) }
+                // 给队列 3 秒机会：暂停的书如果被错误地自动开跑，这里就能看出来
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                let pausedBook = await MainActor.run { store.book(second) }
+                let statusAfterWait = await MainActor.run { dm.task(forBookID: second)?.status }
+                let stayedPaused = pausedTask?.status == .paused && statusAfterWait == .paused
+                let untouched = (pausedBook?.downloadedChapters ?? -1) == seedChapters
+                log("暂停轮 状态=\(pausedTask?.status.rawValue ?? "nil") 3 秒后已写=\(pausedBook?.downloadedChapters ?? -1)")
+
+                log("VERDICT 续传起点=\(startOK ? "PASS" : "FAIL") 无重复下载=\(noDuplicate ? "PASS" : "FAIL") 暂停保持=\(stayedPaused && untouched ? "PASS" : "FAIL")")
+                let allPass = startOK && noDuplicate && stayedPaused && untouched
+                log("ALL \(allPass ? "PASS" : "FAIL")")
+            } catch {
+                log("FAILED: \(error.localizedDescription)")
+            }
+
+            for id in created {
+                await MainActor.run {
+                    dm.dismiss(id)
+                    if let book = store.book(id) { store.delete(book: book) }
+                }
+            }
+            await MainActor.run { dm.debugChapterLimit = nil }
             log("cleanup removed \(created.count) test books")
         }
     }

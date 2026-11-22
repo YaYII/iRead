@@ -8,6 +8,7 @@ struct NovelDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var settings = ReaderSettings.shared
     @ObservedObject private var downloadManager = NovelDownloadManager.shared
+    @ObservedObject private var store = LibraryStore.shared
 
     @State private var detail: NovelDetail?
     @State private var isLoading = true
@@ -16,6 +17,19 @@ struct NovelDetailView: View {
     /// 下载任务的 bookID 即详情 URL，用它关联当前书籍的任务。
     private var currentTask: DownloadTask? {
         downloadManager.task(forSourceKey: result.detailURL)
+    }
+
+    /// 书架里已有的同一本（按来源地址认，不靠书名）。
+    /// 闪退/重启后下载任务表是空的，但书还在 —— 这时候不能再给「下载全书」，
+    /// 否则会建出第二本一模一样的书，已下的几百章也白费。
+    private var shelfBook: Book? {
+        store.books.first { !$0.isComic && $0.remoteURL == result.detailURL }
+    }
+
+    /// 本地还差几章。目录是刚拉的，所以这个数就是当前真实缺口。
+    private var shelfMissing: Int {
+        guard let book = shelfBook, let detail else { return 0 }
+        return max(0, detail.chapters.count - book.downloadedChapters)
     }
 
     /// 下载状态文案：队列里还没轮到的书不能写成「正在下载」
@@ -225,8 +239,21 @@ struct NovelDetailView: View {
                         }
                         ProgressView(value: task.progress)
                             .tint(settings.theme.accent)
-                        outlineButton(title: "取消下载") {
-                            downloadManager.cancel(task.bookID)
+                        // 暂停后重进详情页也要能一键续上：重启后暂停的任务仍在列表里，
+                        // 只给「取消下载」的话用户还得回书架找那颗播放小按钮
+                        if task.status == .paused {
+                            HStack(spacing: 12) {
+                                filledButton(title: "继续下载") {
+                                    downloadManager.resume(task.bookID)
+                                }
+                                outlineButton(title: "取消下载") {
+                                    downloadManager.cancel(task.bookID)
+                                }
+                            }
+                        } else {
+                            outlineButton(title: "取消下载") {
+                                downloadManager.cancel(task.bookID)
+                            }
                         }
                     }
                 case .done:
@@ -255,6 +282,39 @@ struct NovelDetailView: View {
                         filledButton(title: "重新下载") {
                             downloadManager.dismiss(task.bookID)
                             startDownload()
+                        }
+                        outlineButton(title: "取消") {
+                            dismiss()
+                        }
+                    }
+                }
+            } else if let book = shelfBook, let detail {
+                // 已经在书架：只报「还差几章」，别再让人下一次整本
+                let localCount = min(book.downloadedChapters, detail.chapters.count)
+                let progress = detail.chapters.isEmpty
+                    ? 1
+                    : Double(localCount) / Double(detail.chapters.count)
+                VStack(spacing: 8) {
+                    HStack {
+                        Text(shelfMissing > 0 ? "已在书架 · 本地 \(localCount)/\(detail.chapters.count) 章" : "已在书架 · 已是最新")
+                            .font(.subheadline)
+                            .foregroundStyle(settings.theme.foreground)
+                        Spacer()
+                        Text("\(Int((progress * 100).rounded()))%")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(settings.theme.secondary)
+                    }
+                    ProgressView(value: progress)
+                        .tint(settings.theme.accent)
+                    HStack(spacing: 12) {
+                        if shelfMissing > 0 {
+                            filledButton(title: "继续下载剩余 \(shelfMissing) 章") {
+                                startDownload()
+                            }
+                        } else {
+                            filledButton(title: "完成") {
+                                dismiss()
+                            }
                         }
                         outlineButton(title: "取消") {
                             dismiss()

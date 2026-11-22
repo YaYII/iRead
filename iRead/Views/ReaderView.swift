@@ -86,6 +86,10 @@ struct ReaderView: View {
         }
         .preferredColorScheme(theme.colorScheme)
         .onAppear { prepare() }
+        // 打开书时顺手核对一次目录（6 小时节流、只在没在下载时）：
+        // 源站加了新章就接着下后面的，不用等用户去搜书页重新点下载。
+        // 非网络书（本地导入 / 内置示例）在这里直接返回，不发任何请求。
+        .task { NovelDownloadManager.shared.checkForUpdatesIfStale(bookID: bookID) }
         // 阅读器已经开着时，「边听边读」只收起听书界面；
         // 这里让**当前这一页**原地进入跟读，不重建 fullScreenCover。
         .onChange(of: listening.isFollowAlong) { _, on in

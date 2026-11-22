@@ -70,6 +70,16 @@
 
   <img src="docs/screenshots/33-download-queue.png" width="260" alt="一本下载中、一本等待中">
 
+- **闪退也不丢下载进度**（2026-11-22）：队列状态和「已下到第几章」跟着书一起落盘（`library.json` 里的 `book.download`），重启后自动把没下完的接着下 —— 从断点续传，不重下前面的章节。以前这些只活在下载器内存里，闪退后书架上只剩一本半成品：既不知道总共多少章、也不知道该回哪个源，只能重新点「下载全书」整本重来。
+  - **暂停会活过重启**：重启后仍在任务列表里显示「已暂停」，等你点继续，不会自己跑起来。
+  - **能看出是不是全本**：书架列表显示「已下 443/711 章 · 还差 268 章」，详情页直接给「继续下载剩余 N 章」，不再出现「不知道下完没有」。
+  - **自动查更新**：打开一本书时顺手核对一次目录（6 小时节流、非网络书不查），源站加了新章就自动接着下；书架长按也有「检查更新 / 继续下载还差 N 章」。
+  - 省电上的取舍：只在**状态切换**（排队/开跑/暂停/完成/失败）时写一次状态，进度不单独写盘 —— 它跟着每批章节已有的那次 `library.json` 写入一起更新，所以恢复能力是零额外 I/O 换来的。
+
+  <img src="docs/screenshots/34-download-resume-badge.png" width="260" alt="封面角标「还差 567 章」">
+  <img src="docs/screenshots/35-download-resume-list.png" width="260" alt="列表里「已下 144/711 章 · 还差 567 章」">
+
+
 - **多书源并发搜索**：每个启用的书源各起一个任务同时搜，谁先回来谁先上屏；单源 12 秒超时，某个源挂掉或超时不会拖住其它源（结果按书源顺序稳定排列）。
 - **结果直接标章节数**：每条结果在后台查目录并显示「可下 87/1279 章」「共 1312 章」这类规模，查询最多 3 并发、滚到哪查到哪，不会一次性把书源打满。「目录为空」（占位书/已下架）与「无可下载章」（有目录但一章正文都拿不到）分开标注。
 - **同名书按源并列**：同名条目聚在同一区块，作者一致的标「同名书 · N 个源都有」，作者不同的提示「作者不同请核对」；可下章数最多的那条标「章节最多」，选源下载时一眼能比。
@@ -174,7 +184,7 @@ iRead/
                 网络搜书：WebText（HTML 清洗）、NovelHTTPClient（请求）、
                 SelectorEngine（选择器 DSL）、NovelFetcher（抓取）、
                 GitHubBookSource（内置公版书源）、FanqieSource / QimaoSource（已停用，保留）、
-                NovelDownloadManager（下载入库 · 单本队列调度）、
+                NovelDownloadManager（下载入库 · 单本队列调度 · 重启续传）、
                 SourceStore（书源仓库）、AccountStore（登录 Cookie，Keychain）
                 漫画：ComicFetcher（源分发）、MangaDexSource（三步式 API 专用实现）、
                 ComicDownloadManager（按话原子下载 + 断点续传 · 整本串行）
@@ -278,6 +288,7 @@ xcodebuild -project iRead.xcodeproj -scheme iRead \
 - `--selftest-source bqg-92xs`：配合上一项，指定要测试的书源 id（默认测第一个 GitHub 源）
 - `--queue-selftest`：连点两本书下载，验证「单本队列」（严格串行 + 前一本结束自动接力）；加 `--queue-pause` 再验一次暂停让位。可配 `--queue-keyword 遮天`、`--queue-source bqg-92xs`、`--queue-chapters 20`，结果写 `Documents/queue-selftest.txt`，跑完自动删掉测试书
 - `--comic-queue-selftest`：同时「缓存全部」两本漫画，验证整本串行；可配 `--comic-keyword 鬼滅之刃`、`--comic-chapters 2`，结果写 `Documents/comic-queue-selftest.txt`
+- `--resume-selftest`：验证「闪退后续传」。先建书、只写入前 `--resume-seed`（默认 4）章再把状态留在「下载中」（等价于下到一半被杀），然后按磁盘恢复一次（等价于重启 App），判定①续传起点等于已写章数 ②文件里首章不重复（没从头重下）③暂停状态能活过重启；可配 `--resume-keyword 斗罗大陆`、`--resume-source bqg-92xs`、`--resume-chapters 12`，结果写 `Documents/resume-selftest.txt`，跑完自动删测试书
 - `--debug-reader`：启动后直接打开第一本书
 - `--shelf-comic`：书架直接停在「漫画书」分类
 - `--comic-search 鬼灭之刃` / `--comic-search=鬼灭之刃`：切到漫画页并搜索（两种写法都支持）
