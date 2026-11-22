@@ -14,6 +14,7 @@ struct AutoWriteSheet: View {
 
     @State private var chapters = 5
     @State private var planFirst = true
+    @State private var continueOnFail = false
     @State private var mode: Mode = .config
     @State private var showOutline = false
 
@@ -70,6 +71,7 @@ struct AutoWriteSheet: View {
             VStack(alignment: .leading, spacing: 16) {
                 countCard
                 planToggle
+                failToggle
                 outlineRow
                 costNote
                 startButton
@@ -133,6 +135,25 @@ struct AutoWriteSheet: View {
         .background(RoundedRectangle(cornerRadius: 14).fill(theme.foreground.opacity(0.04)))
     }
 
+    private var failToggle: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(isOn: $continueOnFail) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("没过审也接着写")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(theme.foreground)
+                    Text("改过两轮仍不过，就记为草稿、标上问题，继续下一章。适合放着跑；跑完按章节卡上的橙色标记逐章看。关掉则停在那章等你处理。")
+                        .font(.caption)
+                        .foregroundStyle(theme.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .tint(theme.accent)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 14).fill(theme.foreground.opacity(0.04)))
+    }
+
     private var outlineRow: some View {
         Button {
             showOutline = true
@@ -173,7 +194,9 @@ struct AutoWriteSheet: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("每章 2 次请求（写 + 审），约 \(chapters * 2) 次，预计新增 \(chapters * 2500) 字左右。")
             Text("跑的时候会保持屏幕常亮，请留在 App 里；中途退出等于暂停在此章。")
-            Text("审查未过会带问题局部重写，最多再改两次；仍不过就停在那章，不会一直重试烧额度。")
+            Text(continueOnFail
+                 ? "审查未过会带问题局部重写，最多再改两次；仍不过就记为草稿、标上问题，接着写下一章。"
+                 : "审查未过会带问题局部重写，最多再改两次；仍不过就停在那章，不会一直重试烧额度。")
         }
         .font(.caption2)
         .foregroundStyle(theme.secondary)
@@ -184,7 +207,7 @@ struct AutoWriteSheet: View {
     private var startButton: some View {
         Button {
             mode = .run
-            pipeline.start(projectID: projectID, chapters: chapters, planFirst: planFirst)
+            pipeline.start(projectID: projectID, chapters: chapters, planFirst: planFirst, continueOnFail: continueOnFail)
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "play.fill")
@@ -256,7 +279,9 @@ struct AutoWriteSheet: View {
         .padding(.horizontal, 16)
     }
 
-    private var logList: some View {
+    /// 日志卡。运行中要贴着最新一行（`bottomAnchored`），
+    /// 结束页则是「这次跑了什么」的回执，从上往下读。
+    private func logCard(bottomAnchored: Bool) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
@@ -278,18 +303,24 @@ struct AutoWriteSheet: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
             }
-            .defaultScrollAnchor(.bottom)
+            // 锚在顶部：只有两三行日志时贴顶才像一块正经日志，
+            // 贴底会在卡片上方留一大片空底色，像渲染漏了东西。
+            // 长了由 onChange 往下跟。
+            .defaultScrollAnchor(.top)
             .onChange(of: pipeline.logs.count) { _, _ in
-                if let last = pipeline.logs.last {
-                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last.id, anchor: .bottom) }
-                }
+                guard bottomAnchored, let last = pipeline.logs.last else { return }
+                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last.id, anchor: .bottom) }
             }
         }
         // 给日志一块底色：内容少时它贴在底部，没有底色就像页面中间破了个洞
         .background(RoundedRectangle(cornerRadius: 12).fill(theme.foreground.opacity(0.03)))
-        .frame(height: 230)
         .padding(.horizontal, 16)
         .padding(.top, 10)
+    }
+
+    private var logList: some View {
+        logCard(bottomAnchored: true)
+            .frame(height: 230)
     }
 
     private func color(for kind: WritingPipeline.LogLine.Kind) -> Color {
@@ -358,9 +389,8 @@ struct AutoWriteSheet: View {
             .padding(.top, 26)
             .padding(.bottom, 18)
 
-            logList
-
-            Spacer(minLength: 0)
+            logCard(bottomAnchored: false)
+                .frame(maxHeight: .infinity)
 
             HStack(spacing: 10) {
                 Button {
@@ -417,9 +447,10 @@ struct AutoWriteSheet: View {
             chapters = max(1, min(value, 100))
         }
         planFirst = !args.contains("--no-plan")
+        continueOnFail = args.contains("--auto-continue")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             mode = .run
-            pipeline.start(projectID: projectID, chapters: chapters, planFirst: planFirst)
+            pipeline.start(projectID: projectID, chapters: chapters, planFirst: planFirst, continueOnFail: continueOnFail)
         }
     }
 }

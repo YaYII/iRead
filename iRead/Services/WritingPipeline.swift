@@ -65,12 +65,16 @@ final class WritingPipeline: ObservableObject {
     private var task: Task<Void, Never>?
     /// 点了「暂停」：本章写完就停，不打断正在生成的内容
     private var pauseRequested = false
+    /// 三次仍不过审时：停下等人看（默认），还是记个草稿接着往下写
+    private var continueOnFail = false
+    /// 本次运行里没过审的章，跑完一并列出来
+    private var flagged: [String] = []
 
     private init() {}
 
     // MARK: - 对外控制
 
-    func start(projectID: String, chapters: Int, planFirst: Bool) {
+    func start(projectID: String, chapters: Int, planFirst: Bool, continueOnFail: Bool = false) {
         guard !stage.isRunning else { return }
         guard AISettings.shared.isConfigured else {
             stage = .failed("还没有配置 AI 服务")
@@ -78,8 +82,10 @@ final class WritingPipeline: ObservableObject {
             return
         }
         self.projectID = projectID
+        self.continueOnFail = continueOnFail
         target = chapters
         completed = 0
+        flagged = []
         logs = []
         streamText = ""
         activePlan = []
@@ -158,6 +164,9 @@ final class WritingPipeline: ObservableObject {
             UIApplication.shared.isIdleTimerDisabled = false
             stage = .finished
             add(.ok, "全部写完：本次 \(completed) 章，\(WritingStore.shared.project(projectID)?.wordCount ?? 0) 字")
+            if !flagged.isEmpty {
+                add(.warn, "\(flagged.count) 章没过审、已标在章节卡上：\(flagged.joined(separator: "、"))")
+            }
         } catch is CancellationError {
             UIApplication.shared.isIdleTimerDisabled = false
             if stage.isRunning { stage = .paused }
@@ -299,6 +308,13 @@ final class WritingPipeline: ObservableObject {
             return true
         } else {
             add(.error, "\(parsed.title) · \(parsed.body.count) 字 · 审查未过，已存为草稿")
+            flagged.append(parsed.title)
+            if continueOnFail {
+                // 草稿已经在书里了，事件算发生过；接着写下去，最后统一列出哪几章要回头看。
+                // 换成「跳过这一章」会让后文建立在一个没发生过的事件上，比留下瑕疵章更糟。
+                add(.warn, "按设置继续写下一章")
+                return true
+            }
             stage = .failed("第 \(number) 章没过审，停在这里")
             add(.warn, "改一下大纲或这一章目标，再点「从这里重写」")
             UIApplication.shared.isIdleTimerDisabled = false
