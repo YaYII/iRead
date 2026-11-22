@@ -89,7 +89,16 @@ struct ReaderView: View {
         // 打开书时顺手核对一次目录（6 小时节流、只在没在下载时）：
         // 源站加了新章就接着下后面的，不用等用户去搜书页重新点下载。
         // 非网络书（本地导入 / 内置示例）在这里直接返回，不发任何请求。
-        .task { NovelDownloadManager.shared.checkForUpdatesIfStale(bookID: bookID) }
+        .task {
+            NovelDownloadManager.shared.checkForUpdatesIfStale(bookID: bookID)
+            // 仅供截图/自测：直接弹出目录页或书签页
+            let args = ProcessInfo.processInfo.arguments
+            if args.contains("--debug-chapters") || args.contains("--debug-bookmarks") {
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                if args.contains("--debug-chapters") { showChapters = true }
+                if args.contains("--debug-bookmarks") { showBookmarks = true }
+            }
+        }
         // 阅读器已经开着时，「边听边读」只收起听书界面；
         // 这里让**当前这一页**原地进入跟读，不重建 fullScreenCover。
         .onChange(of: listening.isFollowAlong) { _, on in
@@ -146,7 +155,12 @@ struct ReaderView: View {
         .sheet(isPresented: $showBookmarks) {
             Group {
                 if let book = store.book(bookID) {
-                    BookmarksView(book: book) { chapter, char in
+                    BookmarksView(
+                        book: book,
+                        chapterIndex: chapterIndex,
+                        charOffset: scrollProxy.characterIndex,
+                        onToggleCurrent: { toggleBookmark() }
+                    ) { chapter, char in
                         jump(toChapter: chapter, char: char)
                     }
                 }
@@ -382,9 +396,20 @@ struct ReaderView: View {
                     Text(store.book(bookID)?.title ?? "")
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
-                    Text(content.chapterTitle(at: chapterIndex))
-                        .font(.caption2)
-                        .lineLimit(1)
+                    // 章节名 + 下载进度。进度单独一个 Text 并 fixedSize：
+                    // 直接拼进章节名那一行，遇到「第二百三十六章 大结局…」这种长标题，
+                    // 数字会被挤成省略号，等于白加。
+                    HStack(spacing: 6) {
+                        Text(content.chapterTitle(at: chapterIndex))
+                            .font(.caption2)
+                            .lineLimit(1)
+                        if let progress = downloadProgressLabel {
+                            Text(progress)
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(theme.accent)
+                                .fixedSize()
+                        }
+                    }
                 }
                 Spacer()
                 Button {
@@ -395,12 +420,9 @@ struct ReaderView: View {
                         .foregroundStyle(isListeningThisBook ? theme.accent : theme.foreground)
                 }
                 .accessibilityLabel("打开听书")
-                Button {
-                    toggleBookmark()
-                } label: {
-                    Image(systemName: isCurrentBookmarked ? "bookmark.fill" : "bookmark")
-                        .font(.body)
-                }
+                // 书签只保留底栏一个入口：这里原来还有一颗「加书签」，
+                // 和底栏的「书签」列表分成两处，用户会以为是两个功能。
+                // 加/删书签已经挪进书签列表页的头部按钮。
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 8)
@@ -650,12 +672,12 @@ struct ReaderView: View {
 
     // MARK: - 进度 / 书签
 
-    private var isCurrentBookmarked: Bool {
-        store.isBookmarked(
-            bookID: bookID,
-            chapterIndex: chapterIndex,
-            charOffset: scrollProxy.characterIndex
-        )
+    /// 顶栏的下载进度（没下完才显示）。以前要知道下到第几章，
+    /// 得退出阅读、切到搜书页点下载胶囊，翻页时根本看不到。
+    private var downloadProgressLabel: String? {
+        guard let book = store.book(bookID), book.missingChapters > 0,
+              let total = book.download?.total, total > 0 else { return nil }
+        return "已下 \(book.downloadedChapters)/\(total)"
     }
 
     /// 跳章 / 跳书签：把锚点挪到目标位置，让滚动容器重建窗口并定位过去。

@@ -369,9 +369,19 @@ enum NovelFetcher {
     // MARK: - 规则执行辅助
 
     /// 按章节 URL 去重（保留首次出现）。
+    /// 目录去重：同一章在页面上常出现两次 —— 顶部的「最新章节」区块 + 正文里的正常位置。
+    /// 必须保留**最后一次**出现：正常目录在后，按它排才是从头到尾的顺序。
+    ///
+    /// 曾经保留的是第一次，于是《斗罗大陆》第 1 章变成「第二百三十六章 大结局」，
+    /// 一打开书就从结局读起，目录里也看不出哪里不对。
     private static func dedupe(_ chapters: [ChapterLink]) -> [ChapterLink] {
         var seen = Set<String>()
-        return chapters.filter { seen.insert($0.url).inserted }
+        var kept: [ChapterLink] = []
+        for chapter in chapters.reversed() {
+            guard seen.insert(chapter.url).inserted else { continue }
+            kept.append(chapter)
+        }
+        return Array(kept.reversed())
     }
 
     private static func request(_ rule: RuleSection, url: String, source: NovelSource) async throws -> NovelHTTPClient.Response {
