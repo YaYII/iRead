@@ -203,6 +203,12 @@
 - **429 / 5xx 会退避重试**（6 秒、18 秒各一次）；Key 错、模型名错这类重试没用，直接报错
 - **从某章重写**有两个粒度：长按章节卡 →「重写本章」只替换这一章、保留位置（后面章节都建立在这一章发生过的事上，所以它只改写法不改事件）；「从这一章往后重写」会把这章及之后全部删掉重来，删前有确认，且会尽量沿用原来的章纲
 
+跑起来长这样：
+
+<img src="docs/screenshots/36-auto-write-config.png" width="230" alt="开跑前：章数、先排章纲、没过审也接着写、故事大纲">
+<img src="docs/screenshots/37-auto-write-run.png" width="230" alt="跑的时候：一边流式显示正文，一边记流水账">
+<img src="docs/screenshots/38-auto-write-done.png" width="230" alt="跑完：哪几章过了、哪章没过，一条条列着">
+
 #### 服务商
 
 设置 → AI 写作。预设 DeepSeek / 通义千问 / Moonshot / OpenAI / 本地 Ollama / **OpenCode Go 套餐**，也可以选「自定义」手填 —— 地址填到 `/v1` 为止，路径由 App 补。旁边有「测试连接」，点一下发一句「你好」看通不通。
