@@ -132,6 +132,35 @@ struct SettingsView: View {
 
             aiField("Base URL", text: $ai.baseURL, keyboard: .URL)
             aiField("模型", text: $ai.model)
+
+            Menu {
+                ForEach(AIReasoning.allCases) { option in
+                    Button {
+                        ai.reasoning = option
+                    } label: {
+                        // 菜单里带一句说明，不然「低 / 高」没人知道低的是什么
+                        Text("\(option.label)：\(option.detail)")
+                    }
+                }
+            } label: {
+                HStack {
+                    Text("推理强度")
+                        .font(.subheadline)
+                        .foregroundStyle(theme.secondary)
+                    Spacer()
+                    Text(ai.reasoning.label)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(theme.foreground)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(theme.secondary)
+                }
+            }
+
+            Text(reasoningHint)
+                .font(.caption2)
+                .foregroundStyle(theme.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             aiField("API Key", text: Binding(
                 get: { ai.apiKey },
                 set: { ai.setAPIKey($0) }
@@ -184,6 +213,15 @@ struct SettingsView: View {
         // 读起来像一句话没说完。缺就补一个。
         let sentence = base.hasSuffix("。") ? base : base + "。"
         return sentence + "Key 只存本机 Keychain，不随偏好设置导出。"
+    }
+
+    /// 推理强度这行的说明。只讲「发不发」和「不认怎么办」，
+    /// 不承诺效果 —— 同一档在不同模型上差别很大，说死了就是骗人。
+    private var reasoningHint: String {
+        if ai.reasoning == .follow {
+            return "不发这个参数：模型自带推理才会想。录屏里「正在构思」就是它，只计数、不进正文。"
+        }
+        return "随请求带 reasoning_effort=\(ai.reasoning.apiValue ?? "-")。认这一项的主要是 OpenAI o 系列和 OpenCode Go，不认的服务商会报 400，那就退回「跟随模型」。"
     }
 
     private func aiField(

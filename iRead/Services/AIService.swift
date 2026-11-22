@@ -1,6 +1,50 @@
 import Foundation
 import Security
 
+// MARK: - 推理强度
+
+/// 要不要让模型「先想再写」，以及想多久。
+///
+/// 这个参数**不是 App 发明的能力**：想不想、想多久，最终由模型和服务商决定。
+/// 我们只做两件事：默认一个参数都不发（`follow`，谁也别被我们的猜测影响），
+/// 用户明确选了才在请求里带 `reasoning_effort`。
+///
+/// 只给「低 / 高」两档，不给「中 / 最高」：各家认的值不一样
+/// （OpenAI 是 low/medium/high，OpenCode Go 是 low/high/max），
+/// 只取交集就不会出现「选了中档结果 400」。
+enum AIReasoning: String, CaseIterable, Identifiable {
+    case follow
+    case low
+    case high
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .follow: return "跟随模型"
+        case .low: return "低"
+        case .high: return "高"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .follow: return "请求里不带这个参数，想不想、想多久按模型自己的默认来"
+        case .low: return "想得少、落笔快；赶进度或用量紧张时选它"
+        case .high: return "想得细，前后矛盾、时间线这类硬伤拦得更准，但更慢也更贵"
+        }
+    }
+
+    /// nil 表示请求里不带这个字段 —— 有些服务商对多余字段是直接 400 的
+    var apiValue: String? {
+        switch self {
+        case .follow: return nil
+        case .low: return "low"
+        case .high: return "high"
+        }
+    }
+}
+
 // MARK: - 服务商预设
 
 /// 一个 OpenAI 兼容的对话补全服务。国内几家都提供 `/chat/completions` 兼容口，
@@ -146,6 +190,7 @@ final class AISettings: ObservableObject {
         static let baseURL = "iRead.ai.baseURL"
         static let model = "iRead.ai.model"
         static let temperature = "iRead.ai.temperature"
+        static let reasoning = "iRead.ai.reasoning"
         static let session = "iRead.ai.session"
     }
 
@@ -160,6 +205,11 @@ final class AISettings: ObservableObject {
     }
     @Published var temperature: Double {
         didSet { defaults.set(temperature, forKey: Key.temperature) }
+    }
+    /// 推理强度。默认 `follow` = 请求里不带 `reasoning_effort`，
+    /// 模型想不想、想多久全按它自己的默认来 —— 老用户升级后行为不变。
+    @Published var reasoning: AIReasoning {
+        didSet { defaults.set(reasoning.rawValue, forKey: Key.reasoning) }
     }
     /// Keychain 读比 UserDefaults 慢，启动时读一次缓存在内存里
     @Published private(set) var apiKey: String
@@ -179,6 +229,7 @@ final class AISettings: ObservableObject {
         baseURL = d.string(forKey: Key.baseURL) ?? (saved ?? AIProvider.all[0]).baseURL
         model = d.string(forKey: Key.model) ?? (saved ?? AIProvider.all[0]).model
         temperature = d.object(forKey: Key.temperature) as? Double ?? 0.85
+        reasoning = AIReasoning(rawValue: d.string(forKey: Key.reasoning) ?? "") ?? .follow
         // 每家的 Key 分开存，切换服务商时下面 apply() 会重新读。
         // 老版本的单一槽位在这里一次性搬到当前服务商名下，搬完删掉。
         let legacy = AIKeychain.legacy
@@ -317,12 +368,17 @@ final class AIClient {
             request.setValue(settings.sessionID, forHTTPHeaderField: "x-opencode-session")
         }
 
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "model": settings.model,
             "messages": messages.map { ["role": $0.role, "content": $0.content] },
             "temperature": temperature ?? settings.temperature,
             "stream": true
         ]
+        // 「跟随模型」时一个字都不加：多余字段在有些服务商那儿是 400，
+        // 不能因为我们想“帮上忙”就把原本能跑的请求弄挂。
+        if let effort = settings.reasoning.apiValue {
+            payload["reasoning_effort"] = effort
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
