@@ -147,6 +147,7 @@
 - **「停止」是真掐连接**：请求挂在 `Task` 上，点停止就 `cancel()`，`URLSession.bytes` 的序列随之中断，不会在后台把剩下几千字写完再白烧一遍额度
 - **推理模型的思维链不显示，但要拿来报进度**：网关先吐 `reasoning_content` 再吐正文，写小说的思路会剧透、也没有阅读价值，所以正文区只渲染 `content`；但思维链的字数被用来驱动「正在构思（已想 1,240 字）…」，否则开头几十秒界面一片静止，看着像卡死
 - **生成请求打包成一个值再弹 sheet**：`headline / detail / messages` 分几个 `@State` 逐个赋值时，sheet 会先渲染、读到半截状态，表现为「面板空白 + 这次没写成」。改成 `GenerationRequest: Identifiable` + `.sheet(item:)`，一次状态跃迁
+- **不是 agent，也不是对话**：每次生成就是「固定 prompt 模板 + 拼好的上下文 → 一次 `/chat/completions` 请求 → 出完就停」，没有工具调用、没有自我反思、没有多轮累积。点「再写一版」是重新发一次同样的请求（换个随机结果），不是让模型看着上一版改。理由很实际：写小说最怕模型自己发挥跑偏，而 agent 那套「先规划 → 自检 → 不合格重写」会把 token 和等待时间翻几倍，换来的稳定性目前还不值
 
 #### 导出 TXT
 
@@ -164,7 +165,14 @@
 
 #### 服务商
 
-设置 → AI 写作。预设 DeepSeek / 通义千问 / Moonshot / OpenAI / 本地 Ollama，也可以选「自定义」手填 —— 地址填到 `/v1` 为止，路径由 App 补。旁边有「测试连接」，点一下发一句「你好」看通不通。
+设置 → AI 写作。预设 DeepSeek / 通义千问 / Moonshot / OpenAI / 本地 Ollama / **OpenCode Go 套餐**，也可以选「自定义」手填 —— 地址填到 `/v1` 为止，路径由 App 补。旁边有「测试连接」，点一下发一句「你好」看通不通。
+
+**OpenCode Go 套餐**（用自己已有的 Go 订阅，不必再买 DeepSeek 的额度）有两个必踩的坑，都已在代码里处理：
+
+- 地址必须是 `https://opencode.ai/zen/go/v1`。写成 `/zen/v1` 扣的是 **Zen 余额**，Go 套餐额度一分不动，余额为 0 时直接回 `402 Insufficient account funds` —— 看着像「Key 失效」，其实是端点错了。所以 402 的错误文案专门指向这一条
+- 必须带 `x-opencode-session` 头，否则 `400 MissingSessionID`；前面那层 Cloudflare 还会拦掉「通用库」UA（Python urllib / node 这类直接 `403 error code 1010`）。App 发 `iRead/1.0 (iOS; AI writing)`，session 值用安装时生成的 UUID 存进 UserDefaults，只用于路由、没有语义
+
+所以**不用在本机架网关**：这两条请求头 App 自己能发。用户只需要把 Go 套餐的 Key 粘进来。地址如果贴在「自定义」里，按 host 兜底也会自动补 session 头。
 
 ### 内置内容
 三本**原创**演示小说（共 21 章约 1.4 万字）：《檐下晚晴》（都市温情）、《潮汐档案馆》（近未来科幻）、《青灯渡异录》（古典志怪）。首次启动自动灌入书架，可删除。
@@ -384,6 +392,8 @@ xcodebuild -project iRead.xcodeproj -scheme iRead \
 - `--ai-run`：面板打开即自动跑一次「改写本章」
 - `--ai-save`：跑完自动「存进写作」（配 `--ai-run`，验证落盘）
 - `--ai-base http://127.0.0.1:8328/v1`：覆盖 Base URL
+- `--ai-provider opencode-go`：直接切到某个预设（在 `--ai-base` / `--ai-model` 之前生效，后面两项仍可覆盖）
+- `--ai-ping`：真发一次最短请求，控制台打 `ai-ping ok -> <回复>`；「Key 填了但生成不动」先看这一行
 - `--ai-model deepseek-v4.1-flash`：覆盖模型名
 - `--ai-key sk-xxx`：覆盖 API Key（同样写进 Keychain，调试完可用 `--ai-reset` 清掉）
 - `--ai-reset`：启动时清掉 AI 配置（地址 / 模型 / Key）

@@ -300,6 +300,12 @@ struct ContentView: View {
             ai.baseURL = ""
             ai.model = ""
         }
+        // --ai-provider opencode-go：直接切到某个预设（在 --ai-base/--ai-model 之前，
+        // 让后面两项仍能覆盖，方便测「预设 + 换模型」的组合）
+        if let index = args.firstIndex(of: "--ai-provider"), index + 1 < args.count,
+           let provider = AIProvider.all.first(where: { $0.id == args[index + 1] }) {
+            ai.apply(provider)
+        }
         if let index = args.firstIndex(of: "--ai-base"), index + 1 < args.count {
             ai.baseURL = args[index + 1]
         }
@@ -308,6 +314,18 @@ struct ContentView: View {
         }
         if let index = args.firstIndex(of: "--ai-key"), index + 1 < args.count {
             ai.setAPIKey(args[index + 1])
+        }
+        // --ai-ping：真发一次最短请求，把结果打到控制台。
+        // 排查「Key 填了但生成不动」时，先看这一行比翻界面快。
+        if args.contains("--ai-ping") {
+            Task {
+                do {
+                    let reply = try await AIClient.shared.ping()
+                    print("[iRead] ai-ping ok -> \(reply.prefix(40))")
+                } catch {
+                    print("[iRead] ai-ping failed -> \(error.localizedDescription)")
+                }
+            }
         }
     }
 }

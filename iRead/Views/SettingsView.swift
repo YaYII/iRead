@@ -180,7 +180,10 @@ struct SettingsView: View {
         let base = provider.hint.isEmpty
             ? "任何 OpenAI 兼容服务都可以：地址填到 /v1 为止。"
             : provider.hint
-        return "\(base) Key 只存本机 Keychain，不随偏好设置导出。"
+        // 各家的 hint 不一定带句号，直接拼会变成「…报 402 Key 只存本机…」，
+        // 读起来像一句话没说完。缺就补一个。
+        let sentence = base.hasSuffix("。") ? base : base + "。"
+        return sentence + "Key 只存本机 Keychain，不随偏好设置导出。"
     }
 
     private func aiField(

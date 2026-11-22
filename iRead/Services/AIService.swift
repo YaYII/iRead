@@ -11,6 +11,9 @@ struct AIProvider: Identifiable, Hashable {
     let baseURL: String
     let model: String
     let hint: String
+    /// 少数服务除了 `Authorization` 还要求一个固定的路由头。
+    /// 目前只有 OpenCode Go（`x-opencode-session`），值本身无所谓、只用于路由。
+    var sessionHeader: Bool = false
 
     static let custom = AIProvider(
         id: "custom",
@@ -41,6 +44,14 @@ struct AIProvider: Identifiable, Hashable {
             baseURL: "https://api.moonshot.cn/v1",
             model: "moonshot-v1-32k",
             hint: "月之暗面，长上下文适合整章改写"
+        ),
+        AIProvider(
+            id: "opencode-go",
+            name: "OpenCode Go 套餐",
+            baseURL: "https://opencode.ai/zen/go/v1",
+            model: "deepseek-v4.1-flash",
+            hint: "填 Go 套餐的 Key。地址必须是 /zen/go/v1 —— 写成 /zen/v1 扣的是 Zen 余额，余额为 0 会报 402",
+            sessionHeader: true
         ),
         AIProvider(
             id: "openai",
@@ -115,6 +126,7 @@ final class AISettings: ObservableObject {
         static let baseURL = "iRead.ai.baseURL"
         static let model = "iRead.ai.model"
         static let temperature = "iRead.ai.temperature"
+        static let session = "iRead.ai.session"
     }
 
     @Published var providerID: String {
@@ -131,6 +143,9 @@ final class AISettings: ObservableObject {
     }
     /// Keychain 读比 UserDefaults 慢，启动时读一次缓存在内存里
     @Published private(set) var apiKey: String
+    /// OpenCode Go 要求带 `x-opencode-session`。值没有语义、只用于路由，
+    /// 但要稳定：每次请求都换一个，在服务端等于每次都是新连接。
+    let sessionID: String
 
     private let defaults = UserDefaults.standard
 
@@ -144,11 +159,21 @@ final class AISettings: ObservableObject {
         model = d.string(forKey: Key.model) ?? (saved ?? AIProvider.all[0]).model
         temperature = d.object(forKey: Key.temperature) as? Double ?? 0.85
         apiKey = AIKeychain.value
+
+        if let existing = d.string(forKey: Key.session), !existing.isEmpty {
+            sessionID = existing
+        } else {
+            let fresh = "iread-" + UUID().uuidString.lowercased()
+            d.set(fresh, forKey: Key.session)
+            sessionID = fresh
+        }
     }
 
-    var providerName: String {
-        AIProvider.all.first { $0.id == providerID }?.name ?? AIProvider.custom.name
+    var provider: AIProvider {
+        AIProvider.all.first { $0.id == providerID } ?? AIProvider.custom
     }
+
+    var providerName: String { provider.name }
 
     /// 本地地址不要求 Key：Ollama / LM Studio 默认就没有鉴权
     var requiresKey: Bool {
@@ -204,6 +229,10 @@ enum AIError: LocalizedError {
             if code == 401 || code == 403 {
                 return "鉴权失败（\(code)）：API Key 不对或已过期。"
             }
+            if code == 402 {
+                return "余额不足（402）。用的是 OpenCode 的话，检查地址是 /zen/go/v1 而不是 /zen/v1"
+                    + " —— 后者扣的是 Zen 余额，不是 Go 套餐。"
+            }
             if code == 429 {
                 return "请求太频繁或额度用完了（429）。"
             }
@@ -242,8 +271,17 @@ final class AIClient {
         request.timeoutInterval = 180
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        // 必须自报家门：OpenCode 前面那层 Cloudflare 会拦掉「通用库」UA（返回 403 + error code 1010），
+        // 官方的 Go 套餐条款也要求客户端带自己的 UA。默认的 CFNetwork UA 虽然多半能过，
+        // 但写明 App 更符合要求，出问题时也容易在服务端日志里认出来。
+        request.setValue("iRead/1.0 (iOS; AI writing)", forHTTPHeaderField: "User-Agent")
         if !settings.apiKey.isEmpty {
             request.setValue("Bearer \(settings.apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        // OpenCode Go 的路由头。按 host 兜一层：用户把地址贴在「自定义」里也能跑通，
+        // 否则会收到 400 MissingSessionID，看着像 Key 不对。
+        if settings.provider.sessionHeader || (url.host?.contains("opencode.ai") ?? false) {
+            request.setValue(settings.sessionID, forHTTPHeaderField: "x-opencode-session")
         }
 
         let payload: [String: Any] = [
