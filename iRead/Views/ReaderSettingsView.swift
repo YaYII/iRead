@@ -2,7 +2,7 @@ import SwiftUI
 import Foundation
 import AVFoundation
 
-/// 阅读排版设置（纯内容视图）。
+/// 阅读设置（纯内容视图）。
 /// 不自带 NavigationStack /「完成」按钮，外层负责包 sheet 与关闭按钮。
 ///
 /// 设计原则：能用图标就不用文字。参数本身就是自解释的，

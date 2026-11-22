@@ -182,7 +182,7 @@ struct ReaderView: View {
                         .zIndex(2)
                 }
 
-                // 排版面板：内嵌浮层而非 sheet，上半屏正文仍可见，调字号能立刻看到效果
+                // 阅读设置面板：内嵌浮层而非 sheet，上半屏正文仍可见，调字号能立刻看到效果
                 if showSettings {
                     VStack(spacing: 0) {
                         // 点上方正文区域收起面板（番茄同款手感）
@@ -405,7 +405,9 @@ struct ReaderView: View {
 
             HStack(spacing: 0) {
                 toolbarItem("目录", "list.bullet") { openChapters() }
-                toolbarItem("排版", "textformat.size") { showSettings = true }
+                // 叫「设置」不叫「排版」：面板里除了字号/背景，还有亮度、护眼、常亮，
+                // 「排版」只覆盖了一半，用户还得猜。
+                toolbarItem("设置", "gearshape") { showSettings = true }
                 toolbarItem("沉浸", "eye.slash") { showChrome = false }
             }
             .padding(.horizontal, 18)
