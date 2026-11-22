@@ -204,6 +204,8 @@ struct ComicDetailView: View {
 
     private func cacheButtonTitle(_ detail: NovelDetail) -> String {
         if let task = book.flatMap({ downloads.task(for: $0.id) }), task.isActive {
+            // 整本串行下载：排队中的还没开始，别显示成 0% 的「缓存中」
+            if task.status == .queued { return "排队中" }
             return "缓存中 \(Int(task.progress * 100))%"
         }
         return "缓存全部"

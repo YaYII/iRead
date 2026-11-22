@@ -6,6 +6,11 @@ import ImageIO
 /// 为什么不做「边下边读」：文字书一章几百 KB，追加写就完事；漫画一话几十张图，
 /// 半话的图片对阅读毫无意义（缺页比没下更难受），所以按话原子完成 ——
 /// 一话下完才写进 meta.json，没下完的不会出现在阅读器里。
+///
+/// 整本之间是**串行队列**：同一时刻只下一本，其余排队、前一本下完自动接上。
+/// 漫画的数据量大得多（一话几十张图、整本上千张），几本同时下会把带宽和内存
+/// 一起占满，结果每本都只下到开头几话；串行反而能一本一本地真正下完。
+/// 阅读器里点开某一话走的仍是 `ensureChapter`，不受队列影响（用户在等，得插队）。
 @MainActor
 final class ComicDownloadManager: ObservableObject {
     static let shared = ComicDownloadManager()
@@ -34,17 +39,51 @@ final class ComicDownloadManager: ObservableObject {
 
     /// 每个书只允许一个下载任务在跑：同一本书并发写同一个 meta.json 会互相覆盖
     private var runners: [String: Swift.Task<Void, Never>] = [:]
+    /// 排队中的书（FIFO）
+    private var pending: [String] = []
+    /// 当前正在下的那本；nil 表示队列空闲
+    private var runningID: String?
+    /// 排队期间要用的参数：下哪几话、从哪个源下
+    private var jobs: [String: (chapters: [Int], source: NovelSource)] = [:]
     /// 单张图下载并发：站点普遍扛不住高并发，3 是比较稳的折中
     private let imageConcurrency = 3
 
     func task(for bookID: String) -> Task? { tasks[bookID] }
+
+    // MARK: - 队列
+
+    /// 队列空闲时取队首开跑。整本漫画串行：一话几十张图、话内已经 3 张并发，
+    /// 几本一起下会把带宽和内存一起吃掉，还可能被图床限速，反而更慢。
+    private func pump() {
+        guard runningID == nil else { return }
+        while let next = pending.first {
+            pending.removeFirst()
+            guard var task = tasks[next], task.isActive, let job = jobs[next] else { continue }
+            runningID = next
+            task.status = .fetching
+            tasks[next] = task
+            runners[next] = Swift.Task { [weak self] in
+                await self?.run(bookID: next, chapters: job.chapters, source: job.source)
+            }
+            return
+        }
+    }
+
+    /// 结束/取消的任务留一小会儿给界面收起动画，随后清掉
+    private func scheduleCleanup(_ bookID: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            guard let self, self.tasks[bookID]?.isActive == false else { return }
+            self.tasks[bookID] = nil
+        }
+    }
 
     // MARK: - 启动 / 取消
 
     /// 下载指定的一些话（只下还没下完的）。`chapters` 传 nil 表示整本。
     func start(book: Book, source: NovelSource, chapters: [Int]? = nil) {
         guard book.isComic else { return }
-        guard runners[book.id] == nil else { return }
+        // 已经在跑或已经在排队：重复点不再加一个任务
+        guard tasks[book.id]?.isActive != true else { return }
         guard let meta = LibraryStore.shared.comicMeta(for: book.id) else { return }
 
         let targets: [Int]
@@ -61,12 +100,14 @@ final class ComicDownloadManager: ObservableObject {
             total: targets.count,
             status: .queued
         )
-        runners[book.id] = Swift.Task { [weak self] in
-            await self?.run(bookID: book.id, chapters: targets, source: source)
-        }
+        jobs[book.id] = (targets, source)
+        if !pending.contains(book.id) { pending.append(book.id) }
+        pump()
     }
 
     func cancel(_ bookID: String) {
+        pending.removeAll { $0 == bookID }
+        jobs[bookID] = nil
         runners[bookID]?.cancel()
         runners[bookID] = nil
         if var task = tasks[bookID] {
@@ -74,15 +115,15 @@ final class ComicDownloadManager: ObservableObject {
             task.currentChapter = nil
             tasks[bookID] = task
         }
-        // 完成/取消的任务留一小会儿给界面收起动画，随后清掉
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
-            guard let self, self.tasks[bookID]?.isActive == false else { return }
-            self.tasks[bookID] = nil
-        }
+        // 正在跑的那本：取消让循环在本章边界退出，run 的 defer 会接下一本；
+        // 排队中的那本直接从队列摘掉即可。
+        scheduleCleanup(bookID)
     }
 
     /// 书架删除漫画时一并清掉任务
     func forget(_ bookID: String) {
+        pending.removeAll { $0 == bookID }
+        jobs[bookID] = nil
         runners[bookID]?.cancel()
         runners[bookID] = nil
         tasks[bookID] = nil
@@ -91,6 +132,15 @@ final class ComicDownloadManager: ObservableObject {
     // MARK: - 执行
 
     private func run(bookID: String, chapters: [Int], source: NovelSource) async {
+        // 不管从哪条路径退出（下完 / 取消 / 任务已被清掉），都要释放槽位并接下一本
+        defer {
+            runners[bookID] = nil
+            if runningID == bookID { runningID = nil }
+            jobs[bookID] = nil
+            pump()
+            scheduleCleanup(bookID)
+        }
+
         var completed = 0
         var failed = 0
 
@@ -113,6 +163,7 @@ final class ComicDownloadManager: ObservableObject {
             }
         }
 
+        // tasks[bookID] 可能已被 cancel / forget 处理过，读到就按当前状态收尾
         guard var task = tasks[bookID] else { return }
         task.currentChapter = nil
         if Swift.Task.isCancelled {
@@ -124,12 +175,6 @@ final class ComicDownloadManager: ObservableObject {
             task.status = .done
         }
         tasks[bookID] = task
-        runners[bookID] = nil
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
-            guard let self, self.tasks[bookID]?.isActive == false else { return }
-            self.tasks[bookID] = nil
-        }
     }
 
     // MARK: - 阅读器按需下载

@@ -66,6 +66,10 @@
 - **书源可导入/可编辑**：书源管理页支持粘贴或选择 JSON 导入自定义书源，内置源可禁用；规则格式见下方「书源规则格式」。
 - **使用声明**：仅供个人学习、禁止传播、禁止批量、看完即删、责任自担。本项目自带内容均为公版/原创；第三方书源（含笔趣阁）仅提供抓取能力，内容来源由使用者自行判断并承担相应责任。该声明在书籍详情页与设置页常驻；搜书页首次进入时完整展示，搜索后收进顶栏的 ⓘ 按钮（点开即看），把屏幕让给结果列表。
 - **边下边读**：点「下载全书」后书**立即进入书架**（占位），正文分批抓取、抓完一批写一批 —— 下几章就能先读几章，不必等整本下完。进度直接显示在书架封面与「下载任务」页，可随时**暂停 / 继续 / 取消**，取消保留已下章节。下载完成后自动跳到书架。
+- **下载是单本队列**（2026-11-22）：同一时刻只下一本，其余排队显示「等待中」，前一本下完自动接手。小说一批本来就要并发抓 4 章，几本一起下只会互相抢带宽，每本进度都卡在个位数，还同时挂着好几个抓取循环 —— 一本一本反而更快出结果、内存也只有一个循环。**暂停**的书会直接退出循环、让出队列位置（等用户点「继续」再重新排队），所以暂停一本不会把整条队列冻住；漫画下载同理，整本串行、话内仍然 3 图并发，阅读器里点开某一话走的是插队路径，不受队列影响。
+
+  <img src="docs/screenshots/33-download-queue.png" width="260" alt="一本下载中、一本等待中">
+
 - **多书源并发搜索**：每个启用的书源各起一个任务同时搜，谁先回来谁先上屏；单源 12 秒超时，某个源挂掉或超时不会拖住其它源（结果按书源顺序稳定排列）。
 - **结果直接标章节数**：每条结果在后台查目录并显示「可下 87/1279 章」「共 1312 章」这类规模，查询最多 3 并发、滚到哪查到哪，不会一次性把书源打满。「目录为空」（占位书/已下架）与「无可下载章」（有目录但一章正文都拿不到）分开标注。
 - **同名书按源并列**：同名条目聚在同一区块，作者一致的标「同名书 · N 个源都有」，作者不同的提示「作者不同请核对」；可下章数最多的那条标「章节最多」，选源下载时一眼能比。
@@ -170,10 +174,10 @@ iRead/
                 网络搜书：WebText（HTML 清洗）、NovelHTTPClient（请求）、
                 SelectorEngine（选择器 DSL）、NovelFetcher（抓取）、
                 GitHubBookSource（内置公版书源）、FanqieSource / QimaoSource（已停用，保留）、
-                NovelDownloadManager（下载入库）、
+                NovelDownloadManager（下载入库 · 单本队列调度）、
                 SourceStore（书源仓库）、AccountStore（登录 Cookie，Keychain）
                 漫画：ComicFetcher（源分发）、MangaDexSource（三步式 API 专用实现）、
-                ComicDownloadManager（按话原子下载 + 断点续传）
+                ComicDownloadManager（按话原子下载 + 断点续传 · 整本串行）
   Resources/    sources_legado.json（「阅读」共享书源转换出的 9 个静态站，随包内置）
 tools/
   legado-import/convert.py         「阅读 3.0」书源 → iRead 规则的批量转换器
@@ -272,6 +276,8 @@ xcodebuild -project iRead.xcodeproj -scheme iRead \
 - `--search-log`：打印每个书源的搜索耗时与命中数（排查慢源、挂掉的源）
 - `--download-selftest 红楼梦`：跑一遍「搜索→详情→下载→入库」全链路并打印日志
 - `--selftest-source bqg-92xs`：配合上一项，指定要测试的书源 id（默认测第一个 GitHub 源）
+- `--queue-selftest`：连点两本书下载，验证「单本队列」（严格串行 + 前一本结束自动接力）；加 `--queue-pause` 再验一次暂停让位。可配 `--queue-keyword 遮天`、`--queue-source bqg-92xs`、`--queue-chapters 20`，结果写 `Documents/queue-selftest.txt`，跑完自动删掉测试书
+- `--comic-queue-selftest`：同时「缓存全部」两本漫画，验证整本串行；可配 `--comic-keyword 鬼滅之刃`、`--comic-chapters 2`，结果写 `Documents/comic-queue-selftest.txt`
 - `--debug-reader`：启动后直接打开第一本书
 - `--shelf-comic`：书架直接停在「漫画书」分类
 - `--comic-search 鬼灭之刃` / `--comic-search=鬼灭之刃`：切到漫画页并搜索（两种写法都支持）

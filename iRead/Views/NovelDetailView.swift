@@ -18,6 +18,18 @@ struct NovelDetailView: View {
         downloadManager.task(forSourceKey: result.detailURL)
     }
 
+    /// 下载状态文案：队列里还没轮到的书不能写成「正在下载」
+    private func statusLine(_ task: DownloadTask) -> String {
+        switch task.status {
+        case .queued:
+            return "已加入队列，等待下载"
+        case .paused:
+            return "已暂停 \(task.completedChapters)/\(task.totalChapters) 章"
+        default:
+            return "正在下载 \(task.completedChapters)/\(task.totalChapters) 章"
+        }
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             settings.theme.background
@@ -202,7 +214,8 @@ struct NovelDetailView: View {
                 case .queued, .fetching, .paused:
                     VStack(spacing: 8) {
                         HStack {
-                            Text("正在下载 \(task.completedChapters)/\(task.totalChapters) 章")
+                            // 下载是单本队列：排在别人后面时别写成「正在下载」
+                            Text(statusLine(task))
                                 .font(.subheadline)
                                 .foregroundStyle(settings.theme.foreground)
                             Spacer()

@@ -22,6 +22,8 @@ struct iReadApp: App {
                     Self.runCantonesePipelineTestIfRequested()
                     Self.runSpeedSelfTestIfRequested()
                     Self.runDownloadSelfTestIfRequested()
+                    Self.runQueueSelfTestIfRequested()
+                    Self.runComicQueueSelfTestIfRequested()
                 }
         }
     }
@@ -99,6 +101,306 @@ struct iReadApp: App {
             } catch {
                 NSLog("[DL selftest] FAILED: %@", error.localizedDescription)
             }
+        }
+    }
+
+    /// 自检：`--queue-selftest` 同时点两本书下载，验证下载器真的是「一本一本」。
+    ///
+    /// 分两轮：第一轮不干预，看是不是严格串行、前一本结束后自动接力；
+    /// 第二轮（加 `--queue-pause`）在第一本下载中暂停，看操作有没有让出队列位置。
+    /// 结果落盘 `Documents/queue-selftest.txt`（真机用 devicectl 取回）。
+    ///
+    /// 可选参数：`--queue-keyword 斗罗大陆`、`--queue-source bqg-92xs`、
+    /// `--queue-chapters 20`、`--queue-pause`。
+    private static func runQueueSelfTestIfRequested() {
+        let args = ProcessInfo.processInfo.arguments
+        guard args.contains("--queue-selftest") else { return }
+        func value(after flag: String) -> String? {
+            guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
+            return args[i + 1]
+        }
+        let keyword = value(after: "--queue-keyword") ?? "斗罗大陆"
+        let wantedSource = value(after: "--queue-source") ?? "bqg-92xs"
+        let chapterLimit = value(after: "--queue-chapters").flatMap(Int.init) ?? 20
+        let testPause = args.contains("--queue-pause")
+
+        Task.detached {
+            var lines: [String] = []
+            let started = Date()
+            func stamp() -> String { String(format: "+%6.1fs", Date().timeIntervalSince(started)) }
+            // 这个函数跑在 detached task 里，不能直接调 MainActor 隔离的 writeDebugFile
+            func flush() {
+                guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+                try? lines.joined(separator: "\n").write(
+                    to: dir.appendingPathComponent("queue-selftest.txt"),
+                    atomically: true,
+                    encoding: .utf8
+                )
+            }
+            func log(_ text: String) {
+                lines.append("\(stamp()) \(text)")
+                flush()
+            }
+            log("start keyword=\(keyword) source=\(wantedSource) chapters=\(chapterLimit) pause=\(testPause)")
+
+            guard let source = SourceStore.shared.enabledSources.first(where: { $0.id == wantedSource }) else {
+                log("FAILED: 没有启用的书源 \(wantedSource)")
+                return
+            }
+            let dm = NovelDownloadManager.shared
+            let store = LibraryStore.shared
+            var created: [String] = []
+
+            do {
+                let results = try await NovelFetcher.search(source: source, keyword: keyword)
+                log("search results=\(results.count)")
+                // 需要四本：两轮各用两本。第二轮必须换书，否则同一批 URL 命中
+                // URLCache，20 章几十毫秒就「下完」，根本取不到暂停窗口。
+                guard results.count >= 4 else {
+                    log("FAILED: 结果不足四本，无法验证两轮队列")
+                    return
+                }
+                // 每本只取前 N 章：要验证的是调度顺序，不是把整本下完
+                var parsed: [NovelDetail] = []
+                for result in results.prefix(4) {
+                    var detail = try await NovelFetcher.chapters(result: result, source: source)
+                    detail.chapters = Array(detail.chapters.prefix(chapterLimit))
+                    parsed.append(detail)
+                    log("detail 《\(detail.title)》 chapters=\(detail.chapters.count)")
+                }
+                let books = parsed
+
+                // 一轮 = 连点两本 + 每 80ms 采样，直到两本都结束
+                func round(_ name: String, pair: [NovelDetail], pauseFirst: Bool) async -> Bool {
+                    let first = await MainActor.run { dm.download(detail: pair[0], source: source) }
+                    let second = await MainActor.run { dm.download(detail: pair[1], source: source) }
+                    created.append(contentsOf: [first, second])
+                    log("\(name) enqueued 《\(pair[0].title)》《\(pair[1].title)》")
+
+                    var maxFetching = 0
+                    var overlaps = 0
+                    var firstEndAt: Date?
+                    var secondStartAfterFirstEnd: Bool?
+                    var pausedFirst = false
+                    var pauseStartedAt: Date?
+                    var secondRanWhilePaused = false
+                    var resumed = false
+                    let deadline = Date().addingTimeInterval(300)
+
+                    while Date() < deadline {
+                        let snap = await MainActor.run { dm.tasks }
+                        let fetching = snap.filter { $0.status == .fetching }
+                        maxFetching = max(maxFetching, fetching.count)
+                        if fetching.count > 1 {
+                            overlaps += 1
+                            log("\(name) OVERLAP! \(fetching.map(\.title).joined(separator: " + "))")
+                        }
+                        let t1 = snap.first { $0.bookID == first }
+                        let t2 = snap.first { $0.bookID == second }
+
+                        if firstEndAt == nil, let t1, [.done, .failed, .cancelled].contains(t1.status) {
+                            firstEndAt = Date()
+                            log("\(name) first end \(t1.status.rawValue) \(t1.completedChapters)/\(t1.totalChapters)")
+                        }
+                        if secondStartAfterFirstEnd == nil, let t2, t2.status == .fetching {
+                            secondStartAfterFirstEnd = firstEndAt != nil
+                            log("\(name) second start afterFirstEnd=\(firstEndAt != nil)")
+                        }
+                        // 第一本下到一半时按暂停：它该让出位置，第二本接着跑
+                        if pauseFirst, !pausedFirst, let t1, t1.status == .fetching, t1.completedChapters > 0 {
+                            pausedFirst = true
+                            pauseStartedAt = Date()
+                            await MainActor.run { dm.pause(first) }
+                            log("\(name) pause first at \(t1.completedChapters)/\(t1.totalChapters)")
+                        }
+                        if pausedFirst, !resumed, let t2, t2.status == .fetching {
+                            secondRanWhilePaused = true
+                        }
+                        // 暂停满 1 秒再继续，给第二本留出真正开跑的时间
+                        if pausedFirst, !resumed, let pauseStartedAt,
+                           Date().timeIntervalSince(pauseStartedAt) > 1.0 {
+                            resumed = true
+                            await MainActor.run { dm.resume(first) }
+                            log("\(name) resume first")
+                        }
+
+                        let done1 = t1.map { [.done, .failed, .cancelled].contains($0.status) } ?? false
+                        let done2 = t2.map { [.done, .failed, .cancelled].contains($0.status) } ?? false
+                        if done1 && done2 { break }
+                        try? await Task.sleep(nanoseconds: 80_000_000)
+                    }
+
+                    let t1 = await MainActor.run { dm.task(forBookID: first) }
+                    let t2 = await MainActor.run { dm.task(forBookID: second) }
+                    log("\(name) final first=\(t1?.status.rawValue ?? "nil") \(t1?.completedChapters ?? -1)/\(t1?.totalChapters ?? -1)")
+                    log("\(name) final second=\(t2?.status.rawValue ?? "nil") \(t2?.completedChapters ?? -1)/\(t2?.totalChapters ?? -1)")
+                    log("\(name) maxFetching=\(maxFetching) overlaps=\(overlaps) secondStart=\(secondStartAfterFirstEnd.map { $0 ? "after-first" : "before-first" } ?? "never")")
+
+                    let serialOK = maxFetching <= 1
+                    if pauseFirst {
+                        let ok = serialOK && pausedFirst && secondRanWhilePaused && resumed
+                        log("\(name) VERDICT serial=\(serialOK ? "PASS" : "FAIL") pauseRelease=\(secondRanWhilePaused ? "PASS" : "FAIL") resume=\(resumed ? "PASS" : "FAIL")")
+                        return ok
+                    }
+                    let handoff = secondStartAfterFirstEnd ?? false
+                    log("\(name) VERDICT serial=\(serialOK ? "PASS" : "FAIL") handoff=\(handoff ? "PASS" : "FAIL")")
+                    return serialOK && handoff
+                }
+
+                let round1 = await round("round1", pair: Array(books[0..<2]), pauseFirst: false)
+
+                if testPause {
+                    let round2 = await round("round2", pair: Array(books[2..<4]), pauseFirst: true)
+                    log("ALL \(round1 && round2 ? "PASS" : "FAIL")")
+                } else {
+                    log("ALL \(round1 ? "PASS" : "FAIL")")
+                }
+            } catch {
+                log("FAILED: \(error.localizedDescription)")
+            }
+
+            // 自检建的书从书架清掉，别污染正式藏书
+            for id in created {
+                if let book = store.book(id) {
+                    await MainActor.run { store.delete(book: book) }
+                }
+            }
+            log("cleanup removed \(created.count) test books")
+        }
+    }
+
+    /// 自检：`--comic-queue-selftest` 同时「缓存全部」两本漫画，验证整本串行。
+    ///
+    /// 要回答的问题：两本会不会同时在下？第二本是不是等第一本结束才自动接手？
+    /// 结果落盘 `Documents/comic-queue-selftest.txt`。
+    /// 每本只排队前 `--comic-chapters`（默认 2）话，测完把建的书删掉。
+    private static func runComicQueueSelfTestIfRequested() {
+        let args = ProcessInfo.processInfo.arguments
+        guard args.contains("--comic-queue-selftest") else { return }
+        func value(after flag: String) -> String? {
+            guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
+            return args[i + 1]
+        }
+        let keyword = value(after: "--comic-keyword") ?? "鬼滅之刃"
+        let chapterLimit = value(after: "--comic-chapters").flatMap(Int.init) ?? 2
+
+        Task.detached {
+            var lines: [String] = []
+            let started = Date()
+            func stamp() -> String { String(format: "+%6.1fs", Date().timeIntervalSince(started)) }
+            func flush() {
+                guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+                try? lines.joined(separator: "\n").write(
+                    to: dir.appendingPathComponent("comic-queue-selftest.txt"),
+                    atomically: true,
+                    encoding: .utf8
+                )
+            }
+            func log(_ text: String) {
+                lines.append("\(stamp()) \(text)")
+                flush()
+            }
+            log("start keyword=\(keyword) chapters=\(chapterLimit)")
+
+            guard let source = SourceStore.shared.enabledComicSources.first(where: { $0.kind?.lowercased() == "mangadex" }) else {
+                log("FAILED: 没有启用的漫画源")
+                return
+            }
+            let manager = await MainActor.run { ComicDownloadManager.shared }
+            let store = LibraryStore.shared
+            var createdIDs: [String] = []
+
+            do {
+                let results = try await ComicFetcher.search(source: source, keyword: keyword)
+                log("search results=\(results.count)")
+                guard results.count >= 2 else {
+                    log("FAILED: 漫画结果不足两本")
+                    return
+                }
+
+                var books: [Book] = []
+                for result in results.prefix(2) {
+                    let detail = try await ComicFetcher.detail(result: result, source: source)
+                    log("detail 《\(detail.title)》 chapters=\(detail.chapters.count)")
+                    // 同名漫画先清掉再建：保证每轮都是从「一话没下」开始的干净状态，
+                    // 否则上一轮下过的图会让这一轮几十毫秒就结束，取不到并发窗口
+                    if let existing = store.comicBook(remoteKey: result.detailURL) {
+                        await MainActor.run {
+                            manager.forget(existing.id)
+                            store.delete(book: existing)
+                        }
+                    }
+                    let book = store.createComicBook(
+                        title: detail.title,
+                        author: detail.author,
+                        sourceID: source.id,
+                        remoteURL: result.detailURL,
+                        chapters: detail.chapters
+                    )
+                    createdIDs.append(book.id)
+                    books.append(book)
+                    // 只下前几话：验证的是「整本串行」，不是把上百话下完
+                    let targets = detail.chapters.prefix(chapterLimit).map(\.index)
+                    await MainActor.run {
+                        manager.start(book: book, source: source, chapters: Array(targets))
+                    }
+                    log("start 《\(book.title)》 chapters=\(targets.count)")
+                    // 中间不等待：第二本应当直接进队列
+                }
+                let shelfBooks = books
+
+                var maxRunning = 0
+                var overlaps = 0
+                var firstEndAt: Date?
+                var secondStartAfterFirstEnd: Bool?
+                let deadline = Date().addingTimeInterval(420)
+                while Date() < deadline {
+                    let snap = await MainActor.run { manager.tasks }
+                    let running = snap.values.filter { $0.status == .fetching }
+                    maxRunning = max(maxRunning, running.count)
+                    if running.count > 1 {
+                        overlaps += 1
+                        log("OVERLAP! \(running.map(\.title).joined(separator: " + "))")
+                    }
+                    let t1 = snap[shelfBooks[0].id]
+                    let t2 = snap[shelfBooks[1].id]
+                    if firstEndAt == nil, let t1, [.done, .failed, .cancelled].contains(t1.status) {
+                        firstEndAt = Date()
+                        log("first end \(t1.status.rawValue) \(t1.completed)/\(t1.total) 话")
+                    }
+                    if secondStartAfterFirstEnd == nil, let t2, t2.status == .fetching {
+                        secondStartAfterFirstEnd = firstEndAt != nil
+                        log("second start afterFirstEnd=\(firstEndAt != nil)")
+                    }
+                    // 漫画任务在结束后 2.5s 会被清出字典，nil 就是「已经收尾」，不能当未完
+                    let done1 = t1.map { [.done, .failed, .cancelled].contains($0.status) } ?? true
+                    let done2 = t2.map { [.done, .failed, .cancelled].contains($0.status) } ?? true
+                    if done1 && done2 { break }
+                    try? await Task.sleep(nanoseconds: 150_000_000)
+                }
+
+                let t1 = await MainActor.run { manager.task(for: shelfBooks[0].id) }
+                let t2 = await MainActor.run { manager.task(for: shelfBooks[1].id) }
+                log("final first=\(t1?.status.rawValue ?? "nil") \(t1?.completed ?? -1)/\(t1?.total ?? -1)")
+                log("final second=\(t2?.status.rawValue ?? "nil") \(t2?.completed ?? -1)/\(t2?.total ?? -1)")
+                log("maxRunning=\(maxRunning) overlaps=\(overlaps)")
+                let serialOK = maxRunning <= 1
+                let handoff = secondStartAfterFirstEnd ?? false
+                log("VERDICT 串行=\(serialOK ? "PASS" : "FAIL") 接力=\(handoff ? "PASS" : "FAIL")")
+            } catch {
+                log("FAILED: \(error.localizedDescription)")
+            }
+
+            for id in createdIDs {
+                await MainActor.run { manager.forget(id) }
+                if let book = store.book(id) {
+                    await MainActor.run {
+                        ComicDownloadManager.shared.forget(id)
+                        store.delete(book: book)
+                    }
+                }
+            }
+            log("cleanup removed \(createdIDs.count) test books")
         }
     }
 

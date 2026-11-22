@@ -684,9 +684,14 @@ struct BookshelfView: View {
 
     private func downloadLayerContent(task: DownloadTask, book: Book, compact: Bool) -> some View {
         let isPaused = task.status == .paused
-        let statusText = isPaused
-            ? "已暂停"
-            : "下载中 \(task.completedChapters)/\(task.totalChapters) 章"
+        // 下载是单本队列：没轮到的那本要能看出「在排队」，别以为它也在跑
+        let isQueued = task.status == .queued
+        let statusText: String = {
+            if isPaused { return "已暂停" }
+            if isQueued { return "等待中" }
+            // 卡片宽不到 90pt，带章节数必然被截成省略号；进度交给下面的百分比和进度条
+            return "下载中"
+        }()
         let progress = min(1, max(0, task.progress))
 
         return ZStack {
@@ -763,7 +768,7 @@ struct BookshelfView: View {
                     .allowsHitTesting(false)
                 VStack(spacing: 3) {
                     Spacer(minLength: 0)
-                    Text("缓存 \(task.completed)/\(task.total)")
+                    Text(task.status == .queued ? "排队中" : "缓存 \(task.completed)/\(task.total)")
                         .font(.system(size: compact ? 7 : 9, weight: .semibold))
                         .foregroundStyle(.white)
                         .lineLimit(1)
