@@ -274,7 +274,7 @@ struct ReaderView: View {
                     try? await Task.sleep(nanoseconds: 7_000_000_000)
                     if isAwayFromSpeech { returnToSpeechPosition() }
                 }
-                // 仅供自测：跟读态下打开听书界面，验证 top bar 耳机走的是同一个入口
+                // 仅供自测：跟读态下打开听书界面，验证跟读条「听书」与底部「听」球是同一个入口
                 if ProcessInfo.processInfo.arguments.contains("--open-player") {
                     try? await Task.sleep(nanoseconds: 9_000_000_000)
                     openPlayer()
@@ -412,17 +412,10 @@ struct ReaderView: View {
                     }
                 }
                 Spacer()
-                Button {
-                    openPlayer()
-                } label: {
-                    Image(systemName: "headphones")
-                        .font(.body)
-                        .foregroundStyle(isListeningThisBook ? theme.accent : theme.foreground)
-                }
-                .accessibilityLabel("打开听书")
-                // 书签只保留底栏一个入口：这里原来还有一颗「加书签」，
-                // 和底栏的「书签」列表分成两处，用户会以为是两个功能。
-                // 加/删书签已经挪进书签列表页的头部按钮。
+                // 听书入口只留底部那颗「听」球 / 播放胶囊：
+                // 这里原来还有一颗耳机图标，和底部指向同一个播放器，
+                // 两处入口看起来像两个功能（书签也是同样的毛病，一并只留一处）。
+                // 沉浸模式下底栏收起，听书球仍然在，不会因此找不到入口。
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 8)
