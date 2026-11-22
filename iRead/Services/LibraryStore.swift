@@ -25,26 +25,23 @@ enum LibraryError: LocalizedError {
 }
 
 /// 书架数据仓库。书正文存 Documents/Books/<uuid>.txt（统一 UTF-8），
-/// 元数据与书签分别存 library.json / bookmarks.json。
+/// 元数据存 library.json。
 final class LibraryStore: ObservableObject {
     static let shared = LibraryStore()
 
     @Published private(set) var books: [Book] = []
-    @Published private(set) var bookmarks: [Bookmark] = []
     @Published var lastError: String?
 
     private let fm = FileManager.default
     /// 漫画要按目录读写图片，扩展与下载器也得拿到这个路径，故不再 private
     let booksDir: URL
     private let metaURL: URL
-    private let bookmarkURL: URL
     private var cache: [String: BookContent] = [:]
 
     init() {
         let doc = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
         booksDir = doc.appendingPathComponent("Books", isDirectory: true)
         metaURL = doc.appendingPathComponent("library.json")
-        bookmarkURL = doc.appendingPathComponent("bookmarks.json")
         try? fm.createDirectory(at: booksDir, withIntermediateDirectories: true)
         load()
         seedIfNeeded()
@@ -64,15 +61,6 @@ final class LibraryStore: ObservableObject {
     }
 
     func book(_ id: String) -> Book? { books.first { $0.id == id } }
-    func bookmarks(for bookID: String) -> [Bookmark] {
-        bookmarks.filter { $0.bookID == bookID }.sorted { $0.createdAt > $1.createdAt }
-    }
-    func isBookmarked(bookID: String, chapterIndex: Int, charOffset: Int) -> Bool {
-        bookmarks.contains {
-            $0.bookID == bookID && $0.chapterIndex == chapterIndex
-                && abs(($0.charOffset ?? -10_000) - charOffset) <= 40
-        }
-    }
 
     // MARK: - 导入 / 删除
 
@@ -287,9 +275,6 @@ final class LibraryStore: ObservableObject {
         var list = books
         list.removeAll { $0.id == book.id }
         books = list
-        var marks = bookmarks
-        marks.removeAll { $0.bookID == book.id }
-        bookmarks = marks
         cache[book.id] = nil
         try? fm.removeItem(at: booksDir.appendingPathComponent(book.fileName))
         save()
@@ -519,34 +504,6 @@ final class LibraryStore: ObservableObject {
         }
     }
 
-    func toggleBookmark(bookID: String, chapterIndex: Int, charOffset: Int, excerpt: String) {
-        if let existing = bookmarks.first(where: {
-            $0.bookID == bookID && $0.chapterIndex == chapterIndex
-                && abs(($0.charOffset ?? -10_000) - charOffset) <= 40
-        }) {
-            removeBookmark(existing)
-            return
-        }
-        var list = bookmarks
-        list.append(Bookmark(
-            id: UUID().uuidString,
-            bookID: bookID,
-            chapterIndex: chapterIndex,
-            charOffset: charOffset,
-            excerpt: String(excerpt.prefix(60)),
-            createdAt: Date()
-        ))
-        bookmarks = list
-        save()
-    }
-
-    func removeBookmark(_ bookmark: Bookmark) {
-        var list = bookmarks
-        list.removeAll { $0.id == bookmark.id }
-        bookmarks = list
-        save()
-    }
-
     /// 设置变更后清掉正文缓存
     func invalidateContentCache() { cache.removeAll() }
 
@@ -585,18 +542,18 @@ final class LibraryStore: ObservableObject {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(books) { try? data.write(to: metaURL) }
-        if let data = try? encoder.encode(bookmarks) { try? data.write(to: bookmarkURL) }
     }
 
     private func load() {
+        // 书签功能已移除：老版本留在 Documents 里的 bookmarks.json 顺手清掉，
+        // 免得白占空间、以后排查数据问题时被当成还有效的存档。
+        try? fm.removeItem(at: fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("bookmarks.json"))
+
         let decoder = JSONDecoder()
         if let data = try? Data(contentsOf: metaURL),
            let list = try? decoder.decode([Book].self, from: data) {
             books = list.filter { fm.fileExists(atPath: booksDir.appendingPathComponent($0.fileName).path) }
-        }
-        if let data = try? Data(contentsOf: bookmarkURL),
-           let list = try? decoder.decode([Bookmark].self, from: data) {
-            bookmarks = list
         }
     }
 

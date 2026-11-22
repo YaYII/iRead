@@ -21,7 +21,6 @@ struct ReaderView: View {
     @State private var showChrome = true
     @State private var showChapters = false
     @State private var showSettings = false
-    @State private var showBookmarks = false
     @State private var showPlayer = false
     @State private var loadFailed = false
 
@@ -91,12 +90,10 @@ struct ReaderView: View {
         // 非网络书（本地导入 / 内置示例）在这里直接返回，不发任何请求。
         .task {
             NovelDownloadManager.shared.checkForUpdatesIfStale(bookID: bookID)
-            // 仅供截图/自测：直接弹出目录页或书签页
-            let args = ProcessInfo.processInfo.arguments
-            if args.contains("--debug-chapters") || args.contains("--debug-bookmarks") {
+            // 仅供截图/自测：直接弹出目录页
+            if ProcessInfo.processInfo.arguments.contains("--debug-chapters") {
                 try? await Task.sleep(nanoseconds: 700_000_000)
-                if args.contains("--debug-chapters") { openChapters() }
-                if args.contains("--debug-bookmarks") { showBookmarks = true }
+                openChapters()
             }
         }
         // 阅读器已经开着时，「边听边读」只收起听书界面；
@@ -145,23 +142,6 @@ struct ReaderView: View {
                                 Button("关闭") { showChapters = false }
                             }
                         }
-                    }
-                }
-            }
-            .environmentObject(store)
-            .environmentObject(settings)
-            .presentationDetents([.medium, .large])
-        }
-        .sheet(isPresented: $showBookmarks) {
-            Group {
-                if let book = store.book(bookID) {
-                    BookmarksView(
-                        book: book,
-                        chapterIndex: chapterIndex,
-                        charOffset: scrollProxy.characterIndex,
-                        onToggleCurrent: { toggleBookmark() }
-                    ) { chapter, char in
-                        jump(toChapter: chapter, char: char)
                     }
                 }
             }
@@ -414,7 +394,7 @@ struct ReaderView: View {
                 Spacer()
                 // 听书入口只留底部那颗「听」球 / 播放胶囊：
                 // 这里原来还有一颗耳机图标，和底部指向同一个播放器，
-                // 两处入口看起来像两个功能（书签也是同样的毛病，一并只留一处）。
+                // 两处入口看起来像两个功能。
                 // 沉浸模式下底栏收起，听书球仍然在，不会因此找不到入口。
             }
             .padding(.horizontal, 18)
@@ -425,7 +405,6 @@ struct ReaderView: View {
 
             HStack(spacing: 0) {
                 toolbarItem("目录", "list.bullet") { openChapters() }
-                toolbarItem("书签", "bookmark") { showBookmarks = true }
                 toolbarItem("排版", "textformat.size") { showSettings = true }
                 toolbarItem("沉浸", "eye.slash") { showChrome = false }
             }
@@ -663,7 +642,7 @@ struct ReaderView: View {
         }
     }
 
-    // MARK: - 进度 / 书签
+    // MARK: - 进度 / 跳章
 
     /// 打开目录：先把后台新下好的章节补进来，再弹窗。
     ///
@@ -701,7 +680,7 @@ struct ReaderView: View {
         return "已下 \(book.downloadedChapters)/\(total)"
     }
 
-    /// 跳章 / 跳书签：把锚点挪到目标位置，让滚动容器重建窗口并定位过去。
+    /// 跳章：把锚点挪到目标位置，让滚动容器重建窗口并定位过去。
     ///
     /// **只动阅读，绝不碰朗读。** 听书是听书，阅读是阅读：
     /// 想从这一章接着念，用户自己按跟读条上的「从本页听」；
@@ -725,28 +704,7 @@ struct ReaderView: View {
         scrollProxy.releaseFollowing()
         speechHighlight = nil
         showChapters = false
-        showBookmarks = false
         persistScrollProgress(chapter: target, charIndex: offset, throttled: false)
-    }
-
-    private func toggleBookmark() {
-        guard let content else { return }
-        let text = content.chapterText(at: chapterIndex)
-        let start = max(0, min(scrollProxy.characterIndex, max(0, text.length - 1)))
-        let length = min(60, max(0, text.length - start))
-        let excerpt: String
-        if length > 0 {
-            excerpt = text.substring(with: NSRange(location: start, length: length))
-                .replacingOccurrences(of: "\n", with: " ")
-        } else {
-            excerpt = content.chapterTitle(at: chapterIndex)
-        }
-        store.toggleBookmark(
-            bookID: bookID,
-            chapterIndex: chapterIndex,
-            charOffset: start,
-            excerpt: excerpt
-        )
     }
 
     private func persistScrollProgress(chapter: Int, charIndex: Int, throttled: Bool) {

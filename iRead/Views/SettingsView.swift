@@ -102,10 +102,6 @@ struct SettingsView: View {
                     .fill(theme.secondary.opacity(0.25))
                     .frame(width: 1, height: 34)
                 statItem(value: "\(chapterTotal)", label: "章节")
-                Rectangle()
-                    .fill(theme.secondary.opacity(0.25))
-                    .frame(width: 1, height: 34)
-                statItem(value: "\(store.bookmarks.count)", label: "书签")
             }
             Text("所有书籍与阅读记录仅保存在本机，不上传")
                 .font(.caption)

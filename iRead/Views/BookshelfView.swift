@@ -196,7 +196,7 @@ struct BookshelfView: View {
             }
             Button("取消", role: .cancel) { bookToDelete = nil }
         } message: {
-            Text("书籍文件、阅读进度与书签将一并移除，且无法恢复。")
+            Text("书籍文件与阅读进度将一并移除，且无法恢复。")
         }
         .alert("检查更新", isPresented: $showUpdateNotice) {
             Button("好", role: .cancel) { }

@@ -380,7 +380,7 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         isFollowingSpeech = true
     }
 
-    /// 跳章 / 跳书签这类显式导航：等同一次手动滑动，把视口控制权交还用户
+    /// 跳章这类显式导航：等同一次手动滑动，把视口控制权交还用户
     func releaseFollowing() {
         isFollowingSpeech = false
     }
@@ -716,7 +716,7 @@ final class ScrollProxy: ObservableObject {
         isFollowingSpeech = true
     }
 
-    /// 跳章 / 跳书签：只挪视口，把跟随权交还用户（朗读那边一点不动）
+    /// 跳章：只挪视口，把跟随权交还用户（朗读那边一点不动）
     func releaseFollowing() {
         container?.releaseFollowing()
         isFollowingSpeech = false

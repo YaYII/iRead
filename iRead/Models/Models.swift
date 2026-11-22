@@ -151,18 +151,6 @@ struct BookDownload: Codable, Hashable {
     }
 }
 
-// MARK: - 书签
-
-struct Bookmark: Identifiable, Codable, Hashable {
-    var id: String
-    var bookID: String
-    var chapterIndex: Int
-    /// 章内字符位置。旧版本按「页」记录，没有这个字段，回落到章首。
-    var charOffset: Int? = nil
-    var excerpt: String
-    var createdAt: Date
-}
-
 // MARK: - 阅读主题
 
 enum ReadingTheme: String, CaseIterable, Identifiable, Codable {
