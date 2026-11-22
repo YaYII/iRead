@@ -7,12 +7,15 @@ import Foundation
 struct SettingsView: View {
     @EnvironmentObject var settings: ReaderSettings
     @EnvironmentObject var store: LibraryStore
+    @ObservedObject private var ai = AISettings.shared
 
     /// 以 sheet 呈现：右上角给「完成」，底部也不用给标签栏留那么大的空
     var presentedAsSheet: Bool = false
 
     @Environment(\.dismiss) private var dismiss
     @State private var readerExpanded = false
+    @State private var testing = false
+    @State private var testResult: TestResult?
 
     private var theme: ReadingTheme { settings.theme }
 
@@ -25,6 +28,7 @@ struct SettingsView: View {
             ScrollView {
                 VStack(spacing: 12) {
                     preferenceSection
+                    aiSection
                     dataSection
                     aboutSection
                     noticeSection
@@ -92,7 +96,141 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - B 数据
+    // MARK: - B AI 写作
+
+    /// 测试结果：成功也显示正文，用户能一眼确认服务真通了，而不是只看个绿点
+    private struct TestResult: Equatable {
+        var ok: Bool
+        var text: String
+    }
+
+    private var aiSection: some View {
+        sectionCard("AI 写作") {
+            Menu {
+                ForEach(AIProvider.all) { provider in
+                    Button {
+                        ai.apply(provider)
+                        testResult = nil
+                    } label: {
+                        Text(provider.name)
+                    }
+                }
+            } label: {
+                HStack {
+                    Text("服务商")
+                        .font(.subheadline)
+                        .foregroundStyle(theme.secondary)
+                    Spacer()
+                    Text(ai.providerName)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(theme.foreground)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(theme.secondary)
+                }
+            }
+
+            aiField("Base URL", text: $ai.baseURL, keyboard: .URL)
+            aiField("模型", text: $ai.model)
+            aiField("API Key", text: Binding(
+                get: { ai.apiKey },
+                set: { ai.setAPIKey($0) }
+            ), secure: true)
+
+            HStack(spacing: 10) {
+                Button {
+                    testConnection()
+                } label: {
+                    HStack(spacing: 5) {
+                        if testing { ProgressView().controlSize(.mini) }
+                        Text(testing ? "测试中" : "测试连接")
+                    }
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(testing ? theme.secondary : theme.accent)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Capsule().fill(theme.accent.opacity(testing ? 0.06 : 0.12)))
+                }
+                .buttonStyle(.plain)
+                .disabled(testing)
+
+                if let testResult {
+                    Text(testResult.text)
+                        .font(.caption2)
+                        .foregroundStyle(testResult.ok ? theme.secondary : .orange)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Text(aiHint)
+                .font(.caption2)
+                .foregroundStyle(theme.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var aiHint: String {
+        // 本地地址和云服务的注意事项是两回事，不能混在一句里：
+        // 前者「不用 Key」，后者「去官网申请 Key」，混着说两句都不可信。
+        if !ai.requiresKey {
+            return "当前是本机 / 局域网地址，不需要 API Key，正文不会离开你的网络。"
+        }
+        let provider = AIProvider.all.first { $0.id == ai.providerID } ?? AIProvider.custom
+        let base = provider.hint.isEmpty
+            ? "任何 OpenAI 兼容服务都可以：地址填到 /v1 为止。"
+            : provider.hint
+        return "\(base) Key 只存本机 Keychain，不随偏好设置导出。"
+    }
+
+    private func aiField(
+        _ label: String,
+        text: Binding<String>,
+        secure: Bool = false,
+        keyboard: UIKeyboardType = .default
+    ) -> some View {
+        HStack(spacing: 10) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(theme.secondary)
+                .frame(width: 62, alignment: .leading)
+            Group {
+                if secure {
+                    SecureField("", text: text)
+                } else {
+                    TextField("", text: text)
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(theme.foreground)
+            .keyboardType(keyboard)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+        }
+        .padding(9)
+        .background(RoundedRectangle(cornerRadius: 9).fill(theme.foreground.opacity(0.05)))
+    }
+
+    private func testConnection() {
+        testing = true
+        testResult = nil
+        Task {
+            do {
+                let reply = try await AIClient.shared.ping()
+                await MainActor.run {
+                    testResult = TestResult(ok: true, text: "通了：\(reply.prefix(24))")
+                    testing = false
+                }
+            } catch {
+                await MainActor.run {
+                    testResult = TestResult(ok: false, text: error.localizedDescription)
+                    testing = false
+                }
+            }
+        }
+    }
+
+    // MARK: - C 数据
 
     private var dataSection: some View {
         sectionCard("数据") {

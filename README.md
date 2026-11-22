@@ -2,6 +2,8 @@
 
 纯原生（SwiftUI + TextKit）的中文小说阅读器，支持**看**和**听**，阅读完全离线。内置 Piper 中文神经语音模型，音质接近真人。新增「搜书」功能：从内置书源在线搜索、下载到本机后离线阅读，阅读时没有 App 广告。另有独立的**漫画**模块：漫画搜索、按话缓存、图片阅读器，和文字书分开管理。
 
+还多了一个**写作**模块：可以改写、分叉、续写正在看的那一章，也可以拿书架当口味参考从零起一本；写完导出 TXT 直接投平台。**看是看，写是写** —— AI 产出只进写作稿，从不回写原书。
+
 > **使用声明：仅供个人学习、禁止传播、禁止批量、看完即删、责任自担。**
 
 ![书架](docs/screenshots/01-bookshelf.png)
@@ -21,7 +23,7 @@
 - **选中就是系统选中**：长按出现放大镜、左右圆形手柄、可拖拽调整范围，复制 / 查询 / 翻译 / 朗读全在系统菜单里 —— 选中框和手感与系统完全一致，不是自绘的假选中
 - 排版可调：字号 14–36、行距、段间距、四向边距、粗体；四套主题（纸张 / 羊皮纸 / 护眼 / 夜间）
 - 书架：网格 / 列表、搜索、置顶、已读标记、重命名、进度百分比、阅读进度记忆（精确到章内位置）
-- **全局设置只做一个齿轮**：书架右上角的 icon（不带文字、不占标签栏），点开以 sheet 弹出，管阅读偏好 / 数据 / 关于；底部标签栏只有「书架 / 搜书 / 漫画」三项。阅读页底栏那个「设置」是另一层，只调当前这本书的观感，不与它重复
+- **全局设置只做一个齿轮**：书架右上角的 icon（不带文字、不占标签栏），点开以 sheet 弹出，管阅读偏好 / AI 写作 / 数据 / 关于；底部标签栏只有「书架 / 搜书 / 漫画 / 写作」四项。阅读页底栏那个「设置」是另一层，只调当前这本书的观感，不与它重复
 - **不做书签**（2026-11-22 删除）：看网文是「一路往下追」，没有回头标记段落的习惯，所以底栏只留「目录 / 设置 / 沉浸」三项。上次读到哪由阅读进度自动记住（精确到章内位置），退出再进直接接上，不需要手动标记
 - 听书：**同样只有一个入口** —— 阅读页右下的「听」球（沉浸模式下也在），点开就是播放器；顶栏那颗耳机图标已删，它和「听」球指向同一个界面。播放中那颗球会变成播放胶囊，暂停 / 继续 / 进度都在上面
 - **阅读界面里就看得见下载进度**（2026-11-22）：顶栏章节名右侧标「已下 284/711」，目录页头部标「已下 56/711 章 · 还差 655 章」，底部直接给「继续下载剩余 N 章」—— 想确认这本下到哪、还差多少，不用退出阅读去下载页看
@@ -111,6 +113,59 @@
 ![漫画详情](docs/screenshots/31-comic-detail.png)
 ![漫画阅读](docs/screenshots/32-comic-reader.png)
 
+### AI 写作（看是看，写是写）
+
+有些书的设定合胃口、写法不对味。这一块就是让人自己下场：改写看不过去的那一章，或者把故事往别的方向推一章。**写作是底部第四个标签，独立数据、独立编辑器**，书架里的书是别人写的成品，写作里的是自己（和 AI）的草稿，两者不共用一张表。
+
+#### 两个入口
+
+**在阅读页**：顶栏右侧一颗「✨ AI」胶囊。不动原书一个字，生成结果存进「写作」。三个动作：
+
+| 动作 | 给 AI 的交代 |
+|---|---|
+| 改写本章 | 剧情、人物、节点都不变，重写文笔与节奏 |
+| 换个走向 | 从本章的转折点分叉，往下另走一条路 |
+| 接着写 | 从本章结尾往后写一章（会带上上一章的结尾，好接上语气） |
+
+下面还能补一句「这一版想怎么改」（更紧凑 / 文笔再冷一点 / 多写细节 / 对白多一点 / 别改结尾），空着也能跑。
+
+**在写作页**：新建一本，三种起头方式 ——
+
+- **重构底本**：选一本书架里的文字书，保留人物与设定，换一套写法重写
+- **续写底本**：从底本的某一章之后接着写
+- **全新创作**：不挂底本，只借用书架的题材口味
+
+选完底本，方向那一栏自己写（比如「都市悬疑，节奏快一点」），也有题材胶囊可点。之后每章一次「让 AI 写第 N 章」，会把最近几章（编辑器底部写明「约 N 字」）一起发过去 —— 不然人物名和上一章的钩子会丢。
+
+#### 几条设计取舍
+
+- **草稿一本一个 JSON**（`Documents/Writing/<uuid>.json`），不并进 `library.json`。写作是高频小改、每 600ms 防抖存一次，塞进整个书库索引里等于每次保存都重写一遍所有书；反过来说，删底本也不该连带删稿子
+- **书架只贡献「书名」当口味**：新建时把书架上的书名清单发给模型，让它知道这人平时看什么，正文一概不发。真正发正文的只有用户在阅读页/新建页**明确选中的那一章**，界面上有单独一行写清楚
+- **API Key 只进 Keychain**（`kSecClassGenericPassword`），不写 `UserDefaults` —— 偏好设置会被备份、导出、随手截图，Key 不该跟着走
+- **本地模型不用 Key**：地址是 `127.0.0.1` / `localhost` / `192.168.` / `10.` / `172.` 开头时不要求填 Key（Ollama、LM Studio 默认没鉴权），同时提示「正文不会离开你的网络」。用自己的网关也一样，`http://127.0.0.1:8328/v1` 直接能跑
+- **只接 OpenAI 兼容协议**，不绑厂商：`POST {baseURL}/chat/completions` + `stream: true`，逐行读 `data:`。DeepSeek / 通义 / Kimi / OpenAI / Ollama 都是这个口，换服务商只改地址和模型名
+- **「停止」是真掐连接**：请求挂在 `Task` 上，点停止就 `cancel()`，`URLSession.bytes` 的序列随之中断，不会在后台把剩下几千字写完再白烧一遍额度
+- **推理模型的思维链不显示，但要拿来报进度**：网关先吐 `reasoning_content` 再吐正文，写小说的思路会剧透、也没有阅读价值，所以正文区只渲染 `content`；但思维链的字数被用来驱动「正在构思（已想 1,240 字）…」，否则开头几十秒界面一片静止，看着像卡死
+- **生成请求打包成一个值再弹 sheet**：`headline / detail / messages` 分几个 `@State` 逐个赋值时，sheet 会先渲染、读到半截状态，表现为「面板空白 + 这次没写成」。改成 `GenerationRequest: Identifiable` + `.sheet(item:)`，一次状态跃迁
+
+#### 导出 TXT
+
+编辑器右上角菜单 →「导出 TXT」，走系统分享面板，可以存文件、发微信、传到别的 App。格式刻意做得很朴素：
+
+```
+第一章 门缝里的信
+
+正文第一段……
+
+正文第二段……
+```
+
+**只写「章节标题 + 正文」，书名不写进文件里** —— 起点、番茄这类平台上传时书名、简介、分类都是单独填的字段，文件里再带一遍反而要手动删。
+
+#### 服务商
+
+设置 → AI 写作。预设 DeepSeek / 通义千问 / Moonshot / OpenAI / 本地 Ollama，也可以选「自定义」手填 —— 地址填到 `/v1` 为止，路径由 App 补。旁边有「测试连接」，点一下发一句「你好」看通不通。
+
 ### 内置内容
 三本**原创**演示小说（共 21 章约 1.4 万字）：《檐下晚晴》（都市温情）、《潮汐档案馆》（近未来科幻）、《青灯渡异录》（古典志怪）。首次启动自动灌入书架，可删除。
 
@@ -174,10 +229,10 @@ swiftc -O -parse-as-library iRead/Models/NovelModels.swift \
 
 ```
 iRead/
-  App/          iReadApp、ContentView（Tab：书架 / 搜书 / 漫画；设置由书架右上角齿轮弹出）
+  App/          iReadApp、ContentView（Tab：书架 / 搜书 / 漫画 / 写作；设置由书架右上角齿轮弹出）
   Models/       Models（Book/Chapter/主题/音色档位）、ReaderSettings
-  Models/       NovelModels（书源规则/SearchResult/章节/下载任务）、ComicModels（漫画章节 / 每一页）。
-                ReaderSettings（原有）
+  Models/       NovelModels（书源规则/SearchResult/章节/下载任务）、ComicModels（漫画章节 / 每一页）、
+                Writing（写作模式 / 章节草稿 / 作品 / 阅读页三动作）。ReaderSettings（原有）
   Services/     TextParser（编码+分章）、LibraryStore（书库）、
                 WiFiTransferServer（局域网传书 HTTP 服务）、
                 BookContent（章节定位）、ChapterTextProvider（按章生成排版用的 NSAttributedString）、
@@ -192,6 +247,9 @@ iRead/
                 SourceStore（书源仓库）、AccountStore（登录 Cookie，Keychain）
                 漫画：ComicFetcher（源分发）、MangaDexSource（三步式 API 专用实现）、
                 ComicDownloadManager（按话原子下载 + 断点续传 · 整本串行）
+                AI 写作：AIService（服务商预设 + Keychain + 流式客户端）、
+                WritingStore（草稿一稿一 JSON + 导出 TXT）、
+                WritingPrompts（全部 prompt 与「标题/正文」拆分）
   Resources/    sources_legado.json（「阅读」共享书源转换出的 9 个静态站，随包内置）
 tools/
   legado-import/convert.py         「阅读 3.0」书源 → iRead 规则的批量转换器
@@ -201,6 +259,8 @@ Vendor/booklists/  殆知阁 1.5 万本公版书目（随包，本地搜索）
                 NovelSearch（搜书）、NovelDetail（详情/下载）、SourceManager（书源管理）、
                 DownloadTasks（下载任务）、AccountLogin（内置网页登录）
                 漫画：ComicSearch（独立搜索）、ComicDetail（目录/缓存）、ComicReaderView（竖滑阅读器）
+                写作：WritingHome（书目/新建）、WritingEditor（项目编辑器 + 章节编辑器 + 流式生成面板）、
+                ChapterAIView（阅读页 AI 面板）
 Vendor/
   SherpaOnnxC.xcframework          sherpa-onnx v1.13.8（含 onnxruntime，动态框架）
   piper/                           语音资源根目录（folder reference，保留目录结构）
@@ -310,6 +370,23 @@ xcodebuild -project iRead.xcodeproj -scheme iRead \
 - `--tts-selftest`：跑一遍本地语音自检，打印模型加载耗时、每句合成耗时、基频、标点静音长度、
   断句结果与播放链路是否走通（`--male-only` / `--female-only` 可只测单个模型）
 - `--list-voices`：打印系统全部语音清单（确认中文男声/粤语是否真的存在）
+
+写作（截图/自检用，全部会真发请求，别忘了配 `--ai-base` / `--ai-key`）：
+
+- `--writing`：启动后直接切到写作标签
+- `--debug-writing-new`：打开「新建作品」sheet
+- `--seed-writing 渡口`：建一本空稿（底本挂到书架第一本文字书、方向写死「都市悬疑，节奏快一点」）并进入；已有稿子时跳过。**不会生成长度**，配 `--write-gen` 才跑 AI
+- `--open-writing`：打开最近编辑的一本
+- `--open-chapter`：直接进第一章编辑器
+- `--write-gen`：进编辑器后立刻让 AI 写下一章（验证流式面板）
+- `--export-writing`：进编辑器后自动导出 TXT，并打印沙盒路径
+- `--debug-ai`：打开书后延迟 0.8 秒弹出阅读页 AI 面板
+- `--ai-run`：面板打开即自动跑一次「改写本章」
+- `--ai-save`：跑完自动「存进写作」（配 `--ai-run`，验证落盘）
+- `--ai-base http://127.0.0.1:8328/v1`：覆盖 Base URL
+- `--ai-model deepseek-v4.1-flash`：覆盖模型名
+- `--ai-key sk-xxx`：覆盖 API Key（同样写进 Keychain，调试完可用 `--ai-reset` 清掉）
+- `--ai-reset`：启动时清掉 AI 配置（地址 / 模型 / Key）
 
 粤语（系统语音）专用自检。真机拿不到 stdout，所以结果都落盘到 App 沙盒的 `Documents/`，
 用 `xcrun devicectl device copy from --device <UDID> --domain-type appDataContainer \

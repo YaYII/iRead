@@ -16,8 +16,9 @@ struct ContentView: View {
     @State private var showSettings = false
 
     /// 漫画书架、漫画搜索页都不显示「听」球：这两处没有可听的当前书。
+    /// 写作页也不显示：那儿是稿纸，跟朗读没有关系。
     private var showsListeningDock: Bool {
-        if selection == 2 { return false }
+        if selection == 2 || selection == 3 { return false }
         if selection == 0 && shelfMode.isComic { return false }
         return true
     }
@@ -74,6 +75,14 @@ struct ContentView: View {
                     Label("漫画", systemImage: "rectangle.stack")
                 }
                 .tag(2)
+
+            // 写作：和「看」分开的第四个空间。书架上的是别人写的成品，
+            // 这里是自己（和 AI）写的草稿，两边不共用表、不互相覆盖。
+            WritingHomeView()
+                .tabItem {
+                    Label("写作", systemImage: "square.and.pencil")
+                }
+                .tag(3)
         }
         .tint(settings.theme.accent)
         .preferredColorScheme(settings.theme.colorScheme)
@@ -123,6 +132,10 @@ struct ContentView: View {
         .onAppear {
             // 仅供自动化预览/截图使用，正常启动不会命中
             let args = ProcessInfo.processInfo.arguments
+            // AI 服务配置：截图/自测时不必进设置页手打（模拟器没法输入）
+            applyAIDebugArguments(args)
+            // --writing：直接切到写作页
+            if args.contains("--writing") { selection = 3 }
             // --night：截图时强制夜间主题（任何入口都生效）
             if args.contains("--night") { settings.theme = .night }
             // --speed 1.7：截图时指定语速（0.4～4.0）
@@ -245,6 +258,16 @@ struct ContentView: View {
             // 详情页点下载后立即跳到书架（书已进书架，可边下边读）
             selection = 0
         }
+        .onReceive(NotificationCenter.default.publisher(for: .iReadOpenWriting)) { _ in
+            // 阅读页把 AI 生成的内容存进写作后点「去写作看」：
+            // 先收拾掉阅读页，再切标签（顺序反了会看到标签切换被盖在阅读页下面）
+            activeBook = nil
+            selection = 3
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .iReadOpenSettings)) { _ in
+            // 写作页的「AI 还没配置」引导：直接弹设置
+            showSettings = true
+        }
     }
 
     /// 「边听边读」：只收起听书界面，**绝不重新唤起阅读器**。
@@ -268,4 +291,30 @@ struct ContentView: View {
         }
         showPlayer = true
     }
+
+    /// 仅供自测：用启动参数配好 AI 服务，省掉在模拟器里手打（本来也打不了字）
+    private func applyAIDebugArguments(_ args: [String]) {
+        let ai = AISettings.shared
+        if args.contains("--ai-reset") {
+            ai.setAPIKey("")
+            ai.baseURL = ""
+            ai.model = ""
+        }
+        if let index = args.firstIndex(of: "--ai-base"), index + 1 < args.count {
+            ai.baseURL = args[index + 1]
+        }
+        if let index = args.firstIndex(of: "--ai-model"), index + 1 < args.count {
+            ai.model = args[index + 1]
+        }
+        if let index = args.firstIndex(of: "--ai-key"), index + 1 < args.count {
+            ai.setAPIKey(args[index + 1])
+        }
+    }
+}
+
+extension Notification.Name {
+    /// 阅读页存完 AI 稿子后，请求切到「写作」标签
+    static let iReadOpenWriting = Notification.Name("iReadOpenWriting")
+    /// 写作页请求打开全局设置（配置 AI 服务）
+    static let iReadOpenSettings = Notification.Name("iReadOpenSettings")
 }

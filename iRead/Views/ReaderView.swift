@@ -21,6 +21,7 @@ struct ReaderView: View {
     @State private var showChrome = true
     @State private var showChapters = false
     @State private var showSettings = false
+    @State private var showAI = false
     @State private var showPlayer = false
     @State private var loadFailed = false
 
@@ -91,9 +92,15 @@ struct ReaderView: View {
         .task {
             NovelDownloadManager.shared.checkForUpdatesIfStale(bookID: bookID)
             // 仅供截图/自测：直接弹出目录页
-            if ProcessInfo.processInfo.arguments.contains("--debug-chapters") {
+            let args = ProcessInfo.processInfo.arguments
+            if args.contains("--debug-chapters") {
                 try? await Task.sleep(nanoseconds: 700_000_000)
                 openChapters()
+            }
+            // 仅供截图/自测：直接弹出 AI 面板
+            if args.contains("--debug-ai") {
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                showAI = true
             }
         }
         // 阅读器已经开着时，「边听边读」只收起听书界面；
@@ -149,11 +156,41 @@ struct ReaderView: View {
             .environmentObject(settings)
             .presentationDetents([.medium, .large])
         }
+        .sheet(isPresented: $showAI) {
+            if let content {
+                ChapterAIView(
+                    bookID: bookID,
+                    bookTitle: store.book(bookID)?.title ?? "",
+                    chapterIndex: chapterIndex,
+                    chapterTitle: content.chapterTitle(at: chapterIndex),
+                    chapterText: content.chapterText(at: chapterIndex) as String,
+                    previousTail: previousChapterTail
+                ) {
+                    // 「去写作看」：先把阅读页收起来，再切标签。
+                    // 不在这里直接改 ContentView 的 selection —— 跨 fullScreenCover
+                    // 改外层状态会让两个转场打架，走通知让外层自己处理。
+                    showAI = false
+                    dismiss()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        NotificationCenter.default.post(name: .iReadOpenWriting, object: nil)
+                    }
+                }
+                .environmentObject(settings)
+            }
+        }
         .sheet(isPresented: $showPlayer) {
             ListeningPlayerView()
                 .environmentObject(store)
                 .environmentObject(settings)
         }
+    }
+
+    /// 上一章结尾，用来给 AI 交代「从哪儿接上」。只取最后 900 字：
+    /// 续写看的是紧邻的语境，再往前对下一句帮助很小。
+    private var previousChapterTail: String {
+        guard let content, chapterIndex > 0 else { return "" }
+        let text = content.chapterText(at: chapterIndex - 1) as String
+        return String(text.suffix(900))
     }
 
     // MARK: - 主体
@@ -392,6 +429,25 @@ struct ReaderView: View {
                     }
                 }
                 Spacer()
+                // AI 入口：点开是「改写本章 / 换个走向 / 接着写」。
+                // 放在顶栏而不是底栏，是因为它作用于「当前这一章」，
+                // 和底栏那三个全局工具不是一类东西。
+                Button {
+                    showAI = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("AI")
+                            .font(.caption2.weight(.semibold))
+                    }
+                    .foregroundStyle(theme.accent)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(theme.accent.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("用 AI 改写这一章")
                 // 听书入口只留底部那颗「听」球 / 播放胶囊：
                 // 这里原来还有一颗耳机图标，和底部指向同一个播放器，
                 // 两处入口看起来像两个功能。
