@@ -59,6 +59,18 @@ struct Book: Identifiable, Codable, Hashable {
     var isFinished: Bool
     /// "builtin" | "imported"
     var source: String
+    /// "ebook"（书，默认）| "comic"（漫画）。
+    ///
+    /// 用可空字符串而不是带默认值的非可空字段：Swift 合成的 `init(from:)`
+    /// **不会**为缺失的键套用属性默认值，老版本 library.json 里没有这个字段，
+    /// 写成非可空会让整个书架解码失败。书和漫画共用这张表、共用 fileName 列：
+    /// 书是 `<uuid>.txt`，漫画是 `<uuid>.comic/` 目录（目录本身也能被 fileExists 命中）。
+    var kind: String? = nil
+    /// 网络来源标识（`书源id|详情地址`）。漫画用它判断「这本书是不是已经在书架里」，
+    /// 不用为了比对一个地址去解析整份 meta.json。
+    var remoteKey: String? = nil
+
+    var isComic: Bool { kind == "comic" }
 
     var displayAuthor: String { author.trimmingCharacters(in: .whitespaces).isEmpty ? "佚名" : author }
     var progressPercent: String { String(format: "%.1f%%", min(1, max(0, progress)) * 100) }

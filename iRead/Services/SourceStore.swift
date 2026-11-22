@@ -18,7 +18,13 @@ final class SourceStore: ObservableObject {
         load()
     }
 
-    var enabledSources: [NovelSource] { sources.filter { $0.enabled } }
+    /// 文字书源（默认入口「搜书」用）。漫画源从同一条列表里排除，
+    /// 两个模块的搜索结果互不污染。
+    var enabledSources: [NovelSource] { sources.filter { $0.enabled && !$0.isComic } }
+
+    /// 漫画源（独立的「漫画」入口用）
+    var comicSources: [NovelSource] { sources.filter(\.isComic) }
+    var enabledComicSources: [NovelSource] { comicSources.filter { $0.enabled } }
 
     func source(_ id: String) -> NovelSource? { sources.first { $0.id == id } }
 
@@ -63,6 +69,13 @@ final class SourceStore: ObservableObject {
         // 之前只在 result 为空时才加，导致导入任意自定义源后番茄/七猫/殆知阁全部消失。
         let existing = Set(result.map(\.id))
         for builtin in Self.fallbackSources where !existing.contains(builtin.id) {
+            var s = builtin
+            s.isBuiltin = true
+            result.append(s)
+        }
+        // 内置漫画源：和文字源放在同一张表里（同一套启用/禁用、导入导出逻辑），
+        // 靠 media == "comic" 区分入口，搜书那边会自动把它们过滤掉。
+        for builtin in Self.comicSources where !existing.contains(builtin.id) {
             var s = builtin
             s.isBuiltin = true
             result.append(s)
@@ -118,8 +131,10 @@ final class SourceStore: ObservableObject {
     }
 
     /// 从 JSON 文本导入，支持单个对象或数组。
+    /// - parameter defaultMedia: 导入时缺 `media` 字段的源按这个归类。
+    ///   漫画书源管理页传 `"comic"`，这样用户粘一份漫画站规则不用自己加字段。
     @discardableResult
-    func importJSON(_ text: String) throws -> Int {
+    func importJSON(_ text: String, defaultMedia: String? = nil) throws -> Int {
         guard let data = text.data(using: .utf8) else { throw SourceError.invalid("编码错误") }
         let decoder = JSONDecoder()
         var list: [NovelSource]
@@ -132,6 +147,7 @@ final class SourceStore: ObservableObject {
         }
         for var s in list {
             s.isBuiltin = false
+            if s.media == nil, let defaultMedia { s.media = defaultMedia }
             if s.id.isEmpty { s.id = "custom-\(UUID().uuidString)" }
             guard !s.searchURL.isEmpty else { continue }
             sources.removeAll { $0.id == s.id }
@@ -141,9 +157,12 @@ final class SourceStore: ObservableObject {
         return list.count
     }
 
-    /// 导出所有自定义源为 JSON 文本。
-    func exportJSON() -> String {
-        let custom = sources.filter { !$0.isBuiltin }
+    /// 导出所有自定义源为 JSON 文本。传 `media` 只导出那一类（漫画源和文字源分开导出）。
+    func exportJSON(media: String? = nil) -> String {
+        var custom = sources.filter { !$0.isBuiltin }
+        if let media {
+            custom = custom.filter { ($0.media ?? "book") == media }
+        }
         guard let data = try? JSONEncoder.pretty.encode(custom),
               let text = String(data: data, encoding: .utf8) else { return "[]" }
         return text
@@ -220,6 +239,29 @@ final class SourceStore: ObservableObject {
                 join: "\n\n",
                 cleanTail: #"entity.trim.drop('最新网址')"#
             )
+        )
+    ]
+
+    // MARK: - 内置漫画源
+
+    /// 漫画源和文字源同表存放，靠 `media = "comic"` 区分：
+    /// 「搜书」只遍历 `!isComic` 的源，「漫画」只遍历 `isComic` 的源，
+    /// 两个模块的入口、结果、书源管理页都互相独立。
+    ///
+    /// 目前只内置一个：MangaDex 提供公开 API（搜索 → feed → at-home 三步），
+    /// 无需登录、有中文译本、也能下载原图。国内能直连的中文漫画站基本都上了
+    /// JS 渲染或签名校验，纯规则抓不动，所以没有硬塞进来；
+    /// 用户要加第三方漫画站时，在漫画书源管理里导入 JSON 规则即可
+    /// （规则格式同文字书源，`content.list` 填图片地址选择器）。
+    static let comicSources: [NovelSource] = [
+        NovelSource(
+            id: "builtin-mangadex",
+            name: "MangaDex · 多语漫画",
+            baseURL: "https://api.mangadex.org",
+            kind: "mangadex",
+            media: "comic",
+            isBuiltin: true,
+            note: "公开 API 漫画库，优先取简中/繁体译本，没有中文时回退原版。无需登录。"
         )
     ]
 }

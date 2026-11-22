@@ -1,6 +1,6 @@
 # iRead — 原生 iOS 小说阅读器
 
-纯原生（SwiftUI + TextKit）的中文小说阅读器，支持**看**和**听**，阅读完全离线。内置 Piper 中文神经语音模型，音质接近真人。新增「搜书」功能：从内置书源在线搜索、下载到本机后离线阅读，阅读时没有 App 广告。
+纯原生（SwiftUI + TextKit）的中文小说阅读器，支持**看**和**听**，阅读完全离线。内置 Piper 中文神经语音模型，音质接近真人。新增「搜书」功能：从内置书源在线搜索、下载到本机后离线阅读，阅读时没有 App 广告。另有独立的**漫画**模块：漫画搜索、按话缓存、图片阅读器，和文字书分开管理。
 
 > **使用声明：仅供个人学习、禁止传播、禁止批量、看完即删、责任自担。**
 
@@ -21,7 +21,7 @@
 - **选中就是系统选中**：长按出现放大镜、左右圆形手柄、可拖拽调整范围，复制 / 查询 / 翻译 / 朗读全在系统菜单里 —— 选中框和手感与系统完全一致，不是自绘的假选中
 - 排版可调：字号 14–36、行距、段间距、四向边距、粗体；四套主题（纸张 / 羊皮纸 / 护眼 / 夜间）
 - 书架：网格 / 列表、搜索、置顶、已读标记、重命名、进度百分比、阅读进度记忆（精确到章内位置）
-- **设置只做一个齿轮**：书架右上角的 icon（不带文字、不占标签栏），点开以 sheet 弹出；底部标签栏只有「书架 / 搜书」两项
+- **设置只做一个齿轮**：书架右上角的 icon（不带文字、不占标签栏），点开以 sheet 弹出；底部标签栏只有「书架 / 搜书 / 漫画」三项
 - 书签：任意位置添加，可跳转、左滑删除
 
 ### 听（三种音色，全部离线）
@@ -74,6 +74,24 @@
 - 批内并发抓章（4 并发），按章序回填保证正文不乱序；下载中的书点开照常阅读已落盘章节。
 
 > 在线环节只有「搜索 + 下载」。正文落盘后，阅读/听书/排版全部离线，与本项目一贯的离线定位一致。
+
+### 看漫画（独立模块，和文字书分开）
+
+书架顶部有「电子书 / 漫画书」分段（左边默认电子书），右边是漫画书架；底部「漫画」标签页是**独立的搜索入口**，和「搜书」互不相干 —— 两类源的输入、结果、阅读器都不同，混在一个搜索框里每次都会白跑一半源。
+
+- **共用一张表，按 `kind` 分流**：漫画也是 `library.json` 里的一条，`kind = "comic"`。备份、搜索、进度、置顶这些逻辑不必各写一份；书源同理，`NovelSource.media = "comic"`，`enabledSources` 自动把漫画源排除在「搜书」之外
+- **存储**：每本漫画一个 `<uuid>.comic/` 目录，`meta.json` 记章节与每页的宽高/是否已落盘，图片按 `c<话号>/001.jpg` 存（几百话 × 几十页塞进 `library.json` 会把书架索引撑到几 MB）
+- **按话原子下载**：一话下完才写 meta —— 缺几页比整话没下更难受。中断后只补没落盘的那几页，断点续传；3 张图并发、完成一张补一张，结果按下标回填保证页码不乱。阅读器和「缓存全部」共用同一条下载路径，不会下出两种残缺状态
+- **阅读器先只做竖滑**：中文漫画里条漫占大半，左右翻会把一条长图切成几十屏、翻得人晕。图片用 `UIImage(contentsOfFile:)` 懒解码，滚出屏幕由 SwiftUI 回收；点画面收起/展开工具栏，底部可切上一话/下一话
+- **缓存一眼可见**：书架封面角标「已缓存 x/总话数」，详情页「已缓存 x/y 话 · N 页」，章节 chip 带下载图标
+- **本地导入**：书架的 `+` 选多张图片 → 统一转 JPEG、长边压到 2000 → 生成一本漫画，全程不联网
+- **内置漫画源只有 MangaDex**：国内能直连的中文漫画站基本都上了 JS 动态渲染或签名校验，纯规则抓不动（baozimh / copymanga / manhuagui / mangabz / dm9 实测全部不可用）。MangaDex 是公开 API，优先取简中/繁体译本，没有中文时回退全语言；第三方漫画站可以导入 JSON 规则（`media: "comic"`，`content.list` 填图片选择器）
+- **两个实测踩到的坑**：MangaDex 的 edge 对「像浏览器」的 UA 会回一个 JS 校验页（正文是 HTML，JSON 解析必然失败）；它的图床 `*.mangadex.network` 更隐蔽 —— 带 Safari UA 时不报错也不挑战，只对开头几张之后的请求直接回 **404**，看起来特别像「图源不全」。两处都必须用可识别的自定义 UA
+- **使用声明**：漫画源只提供抓取能力，内容版权归原作者与出版方，请自行确认合法性、勿传播。
+
+![漫画书架](docs/screenshots/30-comic-shelf.png)
+![漫画详情](docs/screenshots/31-comic-detail.png)
+![漫画阅读](docs/screenshots/32-comic-reader.png)
 
 ### 内置内容
 三本**原创**演示小说（共 21 章约 1.4 万字）：《檐下晚晴》（都市温情）、《潮汐档案馆》（近未来科幻）、《青灯渡异录》（古典志怪）。首次启动自动灌入书架，可删除。
@@ -138,9 +156,10 @@ swiftc -O -parse-as-library iRead/Models/NovelModels.swift \
 
 ```
 iRead/
-  App/          iReadApp、ContentView（Tab：书架 / 搜书；设置由书架右上角齿轮弹出）
+  App/          iReadApp、ContentView（Tab：书架 / 搜书 / 漫画；设置由书架右上角齿轮弹出）
   Models/       Models（Book/Chapter/Bookmark/主题/音色档位）、ReaderSettings
-  Models/       NovelModels（书源规则/SearchResult/章节/下载任务）、ReaderSettings（原有）
+  Models/       NovelModels（书源规则/SearchResult/章节/下载任务）、ComicModels（漫画章节 / 每一页）。
+                ReaderSettings（原有）
   Services/     TextParser（编码+分章）、LibraryStore（书库）、
                 WiFiTransferServer（局域网传书 HTTP 服务）、
                 BookContent（章节定位）、ChapterTextProvider（按章生成排版用的 NSAttributedString）、
@@ -153,6 +172,8 @@ iRead/
                 GitHubBookSource（内置公版书源）、FanqieSource / QimaoSource（已停用，保留）、
                 NovelDownloadManager（下载入库）、
                 SourceStore（书源仓库）、AccountStore（登录 Cookie，Keychain）
+                漫画：ComicFetcher（源分发）、MangaDexSource（三步式 API 专用实现）、
+                ComicDownloadManager（按话原子下载 + 断点续传）
   Resources/    sources_legado.json（「阅读」共享书源转换出的 9 个静态站，随包内置）
 tools/
   legado-import/convert.py         「阅读 3.0」书源 → iRead 规则的批量转换器
@@ -161,6 +182,7 @@ Vendor/booklists/  殆知阁 1.5 万本公版书目（随包，本地搜索）
   Views/        Bookshelf、Import、Reader、ChapterList、ReaderSettings、Bookmarks、Settings
                 NovelSearch（搜书）、NovelDetail（详情/下载）、SourceManager（书源管理）、
                 DownloadTasks（下载任务）、AccountLogin（内置网页登录）
+                漫画：ComicSearch（独立搜索）、ComicDetail（目录/缓存）、ComicReaderView（竖滑阅读器）
 Vendor/
   SherpaOnnxC.xcframework          sherpa-onnx v1.13.8（含 onnxruntime，动态框架）
   piper/                           语音资源根目录（folder reference，保留目录结构）
@@ -251,6 +273,11 @@ xcodebuild -project iRead.xcodeproj -scheme iRead \
 - `--download-selftest 红楼梦`：跑一遍「搜索→详情→下载→入库」全链路并打印日志
 - `--selftest-source bqg-92xs`：配合上一项，指定要测试的书源 id（默认测第一个 GitHub 源）
 - `--debug-reader`：启动后直接打开第一本书
+- `--shelf-comic`：书架直接停在「漫画书」分类
+- `--comic-search 鬼灭之刃` / `--comic-search=鬼灭之刃`：切到漫画页并搜索（两种写法都支持）
+- `--comic-open-first`：漫画搜索完成后自动打开第一条结果（配 `--comic-search`）
+- `--comic-read`：漫画详情页加载完直接进第一话（配 `--comic-open-first`，会真下载整话）
+- `--open-comic-search`：从书架打开「漫画搜索」sheet（验证书架入口）
 - `--debug-settings`：启动后直接弹出设置页（与书架齿轮同一入口）
 - `--scroll-mid`：直接定位到章中 45%
 - `--scroll-end`：定位到章末（验证跨章衔接）

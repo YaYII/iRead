@@ -95,8 +95,13 @@ struct NovelSource: Codable, Identifiable, Hashable {
     var headers: [String: String]?
     /// "json" 时按 JSON path 解析，否则按 HTML 选择器
     var type: String?
-    /// 专用源：github（公版书单）、fanqie（番茄网页版 + 字体码表）、qimao（七猫网页版），其余走通用规则
+    /// 专用源：github（公版书单）、fanqie（番茄网页版 + 字体码表）、qimao（七猫网页版）、
+    /// mangadex（公开漫画 API），其余走通用规则
     var kind: String?
+    /// "book"（默认，文字书）| "comic"（漫画）。
+    /// 漫画源和文字源共用同一套规则 DSL 与同一个存储，只是入口、解析方式、阅读器不同：
+    /// 漫画的 `content.list` 取到的是图片地址而不是正文。
+    var media: String? = nil
     var enabled: Bool = true
     /// 内置源不可删除，但可禁用
     var isBuiltin: Bool = false
@@ -111,13 +116,15 @@ struct NovelSource: Codable, Identifiable, Hashable {
         case schemaVersion, id, name, note, enabled, isBuiltin
         case search, detail, chapter, content
         case baseURL = "host"
-        case charset, headers, type, kind
+        case charset, headers, type, kind, media
     }
 
     /// 手写解码放在 extension 里（写在结构体内部会抑制成员初始化器）。
     /// 缺省的区块按空规则处理，缺省的字段用默认值——
     /// 这样用户只写 `id/name/host/search/chapter/content` 也能导入成功。
     var isJSON: Bool { type?.lowercased() == "json" }
+    /// 漫画源：走独立的漫画搜索入口与图片解析，不进「搜书」
+    var isComic: Bool { media?.lowercased() == "comic" }
     /// 兼容旧代码里的读取
     var searchURL: String { search.url }
 
@@ -136,6 +143,7 @@ extension NovelSource {
         headers = try c.decodeIfPresent([String: String].self, forKey: .headers)
         type = try c.decodeIfPresent(String.self, forKey: .type)
         kind = try c.decodeIfPresent(String.self, forKey: .kind)
+        media = try c.decodeIfPresent(String.self, forKey: .media)
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         isBuiltin = try c.decodeIfPresent(Bool.self, forKey: .isBuiltin) ?? false
         note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""

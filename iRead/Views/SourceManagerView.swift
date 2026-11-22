@@ -9,6 +9,17 @@ struct SourceManagerView: View {
     @ObservedObject private var settings = ReaderSettings.shared
     @ObservedObject private var sourceStore = SourceStore.shared
 
+    /// nil = 文字书源；"comic" = 漫画书源。
+    /// 两类源存在同一张表里，但管理页各看各的：漫画页里塞一堆小说站只会让人懵。
+    var media: String? = nil
+
+    private var isComicScope: Bool { media == "comic" }
+    private var visibleSources: [NovelSource] {
+        guard let media else { return sourceStore.sources.filter { !$0.isComic } }
+        return sourceStore.sources.filter { ($0.media ?? "book") == media }
+    }
+    private var enabledCount: Int { visibleSources.filter(\.enabled).count }
+
     @State private var showFileImporter = false
     @State private var jsonText = ""
     @State private var showImportAlert = false
@@ -32,7 +43,7 @@ struct SourceManagerView: View {
                         notice
                             .listRowBackground(Color.clear)
                     }
-                    if !AccountStore.sites.isEmpty {
+                    if !AccountStore.sites.isEmpty && !isComicScope {
                         Section {
                             ForEach(AccountStore.sites) { site in
                                 accountRow(site)
@@ -48,7 +59,7 @@ struct SourceManagerView: View {
                         }
                     }
                     Section {
-                        ForEach(sourceStore.sources) { source in
+                        ForEach(visibleSources) { source in
                             sourceRow(source)
                                 .listRowBackground(Color.clear)
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -63,9 +74,9 @@ struct SourceManagerView: View {
                         }
                     } header: {
                         HStack {
-                            Text("书源列表")
+                            Text(isComicScope ? "漫画源列表" : "书源列表")
                             Spacer()
-                            Text("已启用 \(sourceStore.enabledSources.count)/\(sourceStore.sources.count)")
+                            Text("已启用 \(enabledCount)/\(visibleSources.count)")
                         }
                         .foregroundStyle(settings.theme.secondary)
                     }
@@ -145,10 +156,12 @@ struct SourceManagerView: View {
     private var header: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("书源管理")
+                Text(isComicScope ? "漫画书源" : "书源管理")
                     .font(.largeTitle.bold())
                     .foregroundStyle(settings.theme.foreground)
-                Text("内置源随 App 更新，自定义源存本机")
+                Text(isComicScope
+                     ? "漫画的搜索与下载规则，和搜书互不影响"
+                     : "内置源随 App 更新，自定义源存本机")
                     .font(.subheadline)
                     .foregroundStyle(settings.theme.secondary)
             }
@@ -202,7 +215,9 @@ struct SourceManagerView: View {
             Image(systemName: "info.circle")
                 .font(.subheadline)
                 .foregroundStyle(settings.theme.secondary)
-            Text("内置书源随 App 更新，不可删除但可禁用；自定义书源仅保存在本机。请尊重版权，仅添加公版或授权来源。")
+            Text(isComicScope
+                 ? "漫画源的规则和文字书源同一套：search 找作品、chapter 取目录、content.list 取图片地址。导入的 JSON 没写 media 时会自动归到漫画。请只添加你有权访问的来源。"
+                 : "内置书源随 App 更新，不可删除但可禁用；自定义书源仅保存在本机。请尊重版权，仅添加公版或授权来源。")
                 .font(.footnote)
                 .foregroundStyle(settings.theme.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -310,7 +325,9 @@ struct SourceManagerView: View {
     private var exportSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button {
-                shareItem = ShareSourceText(text: sourceStore.exportJSON())
+                shareItem = ShareSourceText(
+                    text: sourceStore.exportJSON(media: isComicScope ? "comic" : "book")
+                )
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "square.and.arrow.up")
@@ -367,8 +384,8 @@ struct SourceManagerView: View {
 
     private func applyImport(_ text: String) {
         do {
-            let count = try sourceStore.importJSON(text)
-            importMessage = "成功导入 \(count) 个书源。"
+            let count = try sourceStore.importJSON(text, defaultMedia: isComicScope ? "comic" : "book")
+            importMessage = "成功导入 \(count) 个\(isComicScope ? "漫画" : "书")源。"
         } catch {
             importMessage = "导入失败：\(error.localizedDescription)"
         }

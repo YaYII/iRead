@@ -1,5 +1,7 @@
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
+import ImageIO
 
 /// 书架首页。只负责展示与交互，打开阅读器由外层通过 onOpenBook 决定。
 struct BookshelfView: View {
@@ -20,6 +22,35 @@ struct BookshelfView: View {
     @FocusState private var searchFocused: Bool
     @State private var showGrid = true
     @State private var showImport = false
+
+    /// 书架分类：左边电子书（默认），右边漫画书。
+    /// 两类共用 `store.books` 这张表（`kind` 区分），只是展示与入口分开，
+    /// 这样备份、搜索、进度逻辑都不必各写一份。
+    @State private var shelf: ShelfKind = .ebook
+    @State private var showComicSearch = false
+    @State private var showComicImporter = false
+    @ObservedObject private var comicDownloads = ComicDownloadManager.shared
+
+    enum ShelfKind: String, CaseIterable, Identifiable {
+        case ebook
+        case comic
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .ebook: return "电子书"
+            case .comic: return "漫画书"
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .ebook: return "book.closed"
+            case .comic: return "rectangle.stack"
+            }
+        }
+    }
 
     @State private var showRename = false
     @State private var renameText = ""
@@ -44,9 +75,11 @@ struct BookshelfView: View {
     }
 
     /// 置顶优先，其次最近阅读，其次添加时间；搜索按书名 / 作者过滤。
+    /// 先按分类过滤：电子书和漫画书是两个书架，互相看不到。
     private var sortedBooks: [Book] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let filtered = store.books.filter { book in
+            guard book.isComic == (shelf == .comic) else { return false }
             guard !query.isEmpty else { return true }
             return book.title.localizedCaseInsensitiveContains(query)
                 || book.author.localizedCaseInsensitiveContains(query)
@@ -75,6 +108,7 @@ struct BookshelfView: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 header
+                shelfPicker
                 if let message = store.lastError {
                     errorBanner(message)
                 }
@@ -99,6 +133,38 @@ struct BookshelfView: View {
         .sheet(isPresented: $showImport) {
             ImportView()
                 .environmentObject(store)
+        }
+        .sheet(isPresented: $showComicSearch) {
+            ComicSearchView()
+        }
+        .fileImporter(
+            isPresented: $showComicImporter,
+            allowedContentTypes: [.image],
+            allowsMultipleSelection: true
+        ) { result in
+            importComic(result)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("iReadSwitchToComicShelf"))) { _ in
+            shelf = .comic
+        }
+        .onChange(of: shelf) { _, newValue in
+            // 听书悬浮球挂在根视图上，漫画既不能听也没有「当前书」，
+            // 在漫画分类下留在那儿只会占地方，用这个共享标记把它收起来。
+            ShelfMode.shared.isComic = (newValue == .comic)
+        }
+        .onAppear {
+            ShelfMode.shared.isComic = (shelf == .comic)
+            // 仅供自动化自测：--shelf-comic 启动直接落在漫画书架
+            let args = ProcessInfo.processInfo.arguments
+            if args.contains("--shelf-comic") {
+                shelf = .comic
+                ShelfMode.shared.isComic = true
+            }
+            // 仅供自动化自测：--open-comic-search 从书架检验「漫画搜索」sheet 入口
+            if args.contains("--open-comic-search") {
+                shelf = .comic
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { showComicSearch = true }
+            }
         }
         .alert("重命名", isPresented: $showRename) {
             TextField("书名", text: $renameText)
@@ -137,7 +203,7 @@ struct BookshelfView: View {
             Text("书架")
                 .font(.system(size: 20, weight: .bold))
                 .foregroundStyle(settings.theme.foreground)
-            Text("\(store.books.count) 本")
+            Text("\(shelfCount) 本")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(settings.theme.secondary)
                 .padding(.horizontal, 6)
@@ -146,6 +212,12 @@ struct BookshelfView: View {
             Spacer(minLength: 4)
             // 搜索收进图标，和番茄书架一致：不占常驻一行
             Button {
+                // 漫画书架的放大镜进「漫画搜索」模块：和搜书是两个互不相干的入口
+                if shelf == .comic {
+                    searchFocused = false
+                    showComicSearch = true
+                    return
+                }
                 if showSearch {
                     searchFocused = false
                     searchText = ""
@@ -157,12 +229,12 @@ struct BookshelfView: View {
             } label: {
                 Image(systemName: "magnifyingglass")
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(showSearch ? settings.theme.accent : settings.theme.secondary)
+                    .foregroundStyle(showSearch && shelf == .ebook ? settings.theme.accent : settings.theme.secondary)
                     .frame(width: 30, height: 30)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(showSearch ? "收起搜索" : "搜索书架")
+            .accessibilityLabel(shelf == .comic ? "搜索漫画" : (showSearch ? "收起搜索" : "搜索书架"))
 
             Button {
                 withAnimation(.easeInOut(duration: 0.15)) { showGrid.toggle() }
@@ -177,7 +249,7 @@ struct BookshelfView: View {
             .accessibilityLabel(showGrid ? "切换为列表视图" : "切换为网格视图")
 
             Button {
-                showImport = true
+                if shelf == .comic { showComicImporter = true } else { showImport = true }
             } label: {
                 Image(systemName: "plus")
                     .font(.footnote.weight(.bold))
@@ -186,7 +258,7 @@ struct BookshelfView: View {
                     .background(Circle().fill(settings.theme.accent))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("导入书籍")
+            .accessibilityLabel(shelf == .comic ? "导入漫画图片" : "导入书籍")
 
             // 设置只做一个 icon，不占 Tab、不带文字：齿轮本身就够表意
             Button {
@@ -204,6 +276,56 @@ struct BookshelfView: View {
         .padding(.horizontal, 20)
         .padding(.top, 4)
         .padding(.bottom, 8)
+    }
+
+    /// 书架分类切换：左边电子书（默认）、右边漫画书，带各自数量。
+    /// 用自绘胶囊而不是系统 Picker：系统分段控件的字号跟着动态字体走，
+    /// 在书架这种小标题行里会撑高，且配色不受阅读主题控制。
+    private var shelfPicker: some View {
+        HStack(spacing: 4) {
+            ForEach(ShelfKind.allCases) { kind in
+                let selected = shelf == kind
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        shelf = kind
+                        searchText = ""
+                        searchFocused = false
+                        showSearch = false
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: kind.icon)
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(kind.title)
+                            .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                        Text("\(bookCount(kind))")
+                            .font(.system(size: 10, weight: .medium))
+                            .opacity(0.65)
+                    }
+                    .foregroundStyle(selected ? settings.theme.foreground : settings.theme.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity)
+                    .background(
+                        Capsule()
+                            .fill(selected ? settings.theme.background : Color.clear)
+                            .shadow(color: .black.opacity(selected ? 0.10 : 0), radius: 3, y: 1)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(Capsule().fill(settings.theme.secondary.opacity(0.13)))
+        .padding(.horizontal, 20)
+        .padding(.bottom, 10)
+    }
+
+    private var shelfCount: Int { bookCount(shelf) }
+
+    private func bookCount(_ kind: ShelfKind) -> Int {
+        store.books.reduce(0) { $0 + ($1.isComic == (kind == .comic) ? 1 : 0) }
     }
 
     @ViewBuilder
@@ -292,31 +414,51 @@ struct BookshelfView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: store.books.isEmpty ? "books.vertical" : "magnifyingglass")
+        let isComic = shelf == .comic
+        let isEmptyShelf = bookCount(shelf) == 0
+        return VStack(spacing: 16) {
+            Image(systemName: isEmptyShelf ? (isComic ? "rectangle.stack" : "books.vertical") : "magnifyingglass")
                 .font(.system(size: 52, weight: .light))
                 .foregroundStyle(settings.theme.secondary)
-            Text(store.books.isEmpty ? "书架还是空的" : "没有找到匹配的书")
+            Text(isEmptyShelf ? (isComic ? "还没有漫画" : "书架还是空的") : "没有找到匹配的书")
                 .font(.headline)
                 .foregroundStyle(settings.theme.foreground)
-            Text(store.books.isEmpty
-                 ? "导入本地 TXT 文件，开始你的离线阅读。"
+            Text(isEmptyShelf
+                 ? (isComic
+                    ? "搜索在线漫画，或把手机里的图片导入成一本。"
+                    : "导入本地 TXT 文件，开始你的离线阅读。")
                  : "试试更换书名或作者关键词。")
                 .font(.subheadline)
                 .foregroundStyle(settings.theme.secondary)
                 .multilineTextAlignment(.center)
-            if store.books.isEmpty {
-                Button {
-                    showImport = true
-                } label: {
-                    Text("导入 TXT")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 22)
-                        .padding(.vertical, 10)
-                        .background(Capsule().fill(settings.theme.accent))
+            if isEmptyShelf {
+                HStack(spacing: 10) {
+                    Button {
+                        if isComic { showComicSearch = true } else { showImport = true }
+                    } label: {
+                        Text(isComic ? "搜索漫画" : "导入 TXT")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 22)
+                            .padding(.vertical, 10)
+                            .background(Capsule().fill(settings.theme.accent))
+                    }
+                    .buttonStyle(.plain)
+
+                    if isComic {
+                        Button {
+                            showComicImporter = true
+                        } label: {
+                            Text("导入图片")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(settings.theme.accent)
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 10)
+                                .background(Capsule().stroke(settings.theme.accent, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .buttonStyle(.plain)
             }
         }
         .frame(maxWidth: .infinity)
@@ -351,6 +493,10 @@ struct BookshelfView: View {
         .overlay(alignment: .top) {
             downloadLayer(for: book)
                 // 卡片宽度即封面宽度，按 3:4 撑出封面高度，正好盖住封面
+                .aspectRatio(3.0 / 4.0, contentMode: .fit)
+        }
+        .overlay(alignment: .top) {
+            comicDownloadLayer(for: book)
                 .aspectRatio(3.0 / 4.0, contentMode: .fit)
         }
         .contextMenu { contextMenuItems(for: book) }
@@ -410,12 +556,37 @@ struct BookshelfView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .offset(x: 9, y: 9)
         }
+        .overlay(alignment: .topLeading) {
+            comicDownloadLayer(for: book, compact: true)
+                .frame(width: 46, height: 62)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .offset(x: 9, y: 9)
+        }
         .contextMenu { contextMenuItems(for: book) }
     }
 
     /// 生成式封面：渐变底 + 居中书名，底部一条细进度线；置顶 / 已读用小角标。
     /// 列表里的小缩略图不重复画书名（右侧已有标题），只留色块和书脊。
+    /// 漫画有实拍封面（第一张已下载的图），走另一套渲染。
+    @ViewBuilder
     private func coverView(
+        book: Book,
+        showsBadges: Bool = true,
+        showsTitle: Bool = true
+    ) -> some View {
+        if book.isComic {
+            ComicShelfCover(
+                book: book,
+                theme: settings.theme,
+                showsBadges: showsBadges,
+                showsTitle: showsTitle
+            )
+        } else {
+            generatedCover(book: book, showsBadges: showsBadges, showsTitle: showsTitle)
+        }
+    }
+
+    private func generatedCover(
         book: Book,
         showsBadges: Bool = true,
         showsTitle: Bool = true
@@ -579,14 +750,84 @@ struct BookshelfView: View {
         }
     }
 
+    // MARK: - 漫画缓存 / 本地导入
+
+    /// 漫画缓存进度：盖在封面上显示「缓存 x/y 话」。
+    /// 和文字书的下载层分开画：那边按「章」统计、带暂停按钮，这边是整本批量缓存，
+    /// 中途只能整体停，交互口径不一样。
+    @ViewBuilder
+    private func comicDownloadLayer(for book: Book, compact: Bool = false) -> some View {
+        if book.isComic, let task = comicDownloads.task(for: book.id), task.isActive {
+            ZStack {
+                Color.black.opacity(0.42)
+                    .allowsHitTesting(false)
+                VStack(spacing: 3) {
+                    Spacer(minLength: 0)
+                    Text("缓存 \(task.completed)/\(task.total)")
+                        .font(.system(size: compact ? 7 : 9, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1.5)
+                        .background(Capsule().fill(.black.opacity(0.45)))
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(.white.opacity(0.28))
+                            Capsule()
+                                .fill(.white)
+                                .frame(width: max(0, geo.size.width * task.progress))
+                        }
+                    }
+                    .frame(height: compact ? 3 : 4)
+                }
+                .padding(compact ? 3 : 6)
+                .allowsHitTesting(false)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+    }
+
+    private func cacheAll(_ book: Book) {
+        guard let meta = store.comicMeta(for: book.id),
+              let source = SourceStore.shared.source(meta.sourceID) else { return }
+        comicDownloads.start(book: book, source: source)
+    }
+
+    private func importComic(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard !urls.isEmpty else { return }
+            do {
+                _ = try store.importComic(
+                    images: urls,
+                    title: urls.first?.deletingPathExtension().lastPathComponent ?? "本地漫画"
+                )
+                shelf = .comic
+            } catch {
+                store.lastError = error.localizedDescription
+            }
+        case .failure(let error):
+            store.lastError = "无法读取图片：\(error.localizedDescription)"
+        }
+    }
+
     // MARK: - 长按菜单
 
     @ViewBuilder
     private func contextMenuItems(for book: Book) -> some View {
-        Button {
-            onListenBook(book)
-        } label: {
-            Label("听书", systemImage: "headphones")
+        if book.isComic {
+            Button {
+                cacheAll(book)
+            } label: {
+                Label("缓存全部", systemImage: "arrow.down.circle")
+            }
+        } else {
+            Button {
+                onListenBook(book)
+            } label: {
+                Label("听书", systemImage: "headphones")
+            }
         }
         Button {
             store.togglePin(book: book)
@@ -618,5 +859,170 @@ struct BookshelfView: View {
         } label: {
             Label("删除", systemImage: "trash")
         }
+    }
+}
+
+// MARK: - 漫画书架封面
+
+/// 漫画封面：优先用本机第一张已下载的图，没有就退回渐变 + 书名。
+///
+/// 不用远程封面：漫画书架可能长期离线用，为了封面每次进 App 都发请求很浪费；
+/// 而且缓存过的漫画迟早有本地图，两套来源会让封面闪一下再换。
+// MARK: - 漫画封面
+
+/// 书架当前分类的跨视图标记。
+///
+/// 只有一件事需要它：听书悬浮球挂在 `ContentView` 根部（切标签也不能消失），
+/// 但漫画书架里那个「听」没有意义。与其把书架状态提升到根视图再逐层传，
+/// 不如让书架把「现在是不是漫画分类」写进这个单例，根部按需隐藏。
+@MainActor
+final class ShelfMode: ObservableObject {
+    static let shared = ShelfMode()
+    @Published var isComic = false
+    private init() {}
+}
+
+private struct ComicShelfCover: View {
+    let book: Book
+    let theme: ReadingTheme
+    var showsBadges: Bool = true
+    var showsTitle: Bool = true
+
+    @State private var image: UIImage?
+    /// 已缓存话数 / 总话数。nil 表示还没读出来或这本没有目录。
+    @State private var cacheCount: (have: Int, total: Int)?
+
+    var body: some View {
+        let hue = min(1, max(0, book.coverHue))
+        let progress = min(1, max(0, book.progress))
+
+        return ZStack {
+            LinearGradient(
+                colors: [
+                    Color(hue: hue, saturation: 0.48, brightness: 0.68),
+                    Color(hue: hue, saturation: 0.62, brightness: 0.34)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                VStack(spacing: 3) {
+                    Image(systemName: "rectangle.stack")
+                        .font(.system(size: 15, weight: .light))
+                        .foregroundStyle(.white.opacity(0.55))
+                    if showsTitle {
+                        Text(book.title)
+                            .font(.system(size: 10, weight: .bold))
+                            .multilineTextAlignment(.center)
+                            .lineLimit(3)
+                            .minimumScaleFactor(0.6)
+                            .foregroundStyle(.white.opacity(0.92))
+                    }
+                }
+                .padding(6)
+            }
+
+            if showsBadges {
+                VStack {
+                    HStack(alignment: .top, spacing: 4) {
+                        if book.isPinned { cornerBadge(systemName: "pin.fill", rotation: -25) }
+                        Spacer(minLength: 0)
+                        if book.isFinished { cornerBadge(systemName: "checkmark", rotation: 0) }
+                    }
+                    Spacer(minLength: 0)
+                    // 已缓存话数：下过才显示。没下过的书封面就是空白占位，一眼能分辨
+                }
+                .padding(5)
+
+                if let cacheCount, cacheCount.have > 0 {
+                    VStack {
+                        Spacer(minLength: 0)
+                        HStack(spacing: 2) {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .font(.system(size: 7, weight: .bold))
+                            Text("\(cacheCount.have)/\(cacheCount.total)")
+                                .font(.system(size: 8, weight: .semibold).monospacedDigit())
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1.5)
+                        .background(Capsule().fill(Color.black.opacity(0.48)))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.horizontal, 5)
+                    // 让开底部那条阅读进度线
+                    .padding(.bottom, 6)
+                }
+            }
+
+            // 阅读进度：贴底细线，和文字书保持一致
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Rectangle().fill(Color.white.opacity(0.20))
+                        if progress > 0 {
+                            Rectangle()
+                                .fill(Color.white.opacity(0.9))
+                                .frame(width: geo.size.width * CGFloat(progress))
+                        }
+                    }
+                }
+                .frame(height: 2.5)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
+        )
+        .shadow(color: .black.opacity(0.16), radius: 6, x: 0, y: 3)
+        // fileSize 变了说明新下了图，封面可能从占位变成实图，重新取一次
+        .task(id: "\(book.id)|\(book.fileSize)") {
+            guard let url = LibraryStore.shared.comicCoverURL(for: book) else { return }
+            let thumb = await Task.detached(priority: .utility) {
+                ComicCoverThumbnail.load(url: url, maxPixel: 360)
+            }.value
+            if !Task.isCancelled { image = thumb }
+            // 顺带读一下缓存进度。meta.json 只有几 KB，一屏十几本也就十几 KB，
+            // 比让用户点进去才知道「这本下没下过」划算。
+            let cached = await Task.detached(priority: .utility) { () -> (have: Int, total: Int)? in
+                guard let meta = LibraryStore.shared.comicMeta(for: book.id),
+                      !meta.chapters.isEmpty else { return nil }
+                return (meta.downloadedChapters, meta.chapters.count)
+            }.value
+            if !Task.isCancelled { cacheCount = cached }
+        }
+    }
+
+    private func cornerBadge(systemName: String, rotation: Double) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 7, weight: .bold))
+            .foregroundStyle(.white)
+            .rotationEffect(.degrees(rotation))
+            .frame(width: 14, height: 14)
+            .background(Circle().fill(Color.black.opacity(0.35)))
+    }
+}
+
+/// 书架封面只需要几十像素高，整页图直接解码会白白吃掉几十 MB 内存。
+/// 用 ImageIO 的缩略图接口按目标尺寸解码，代价只有原图的百分之几。
+private enum ComicCoverThumbnail {
+    static func load(url: URL, maxPixel: CGFloat) -> UIImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        return UIImage(cgImage: cgImage)
     }
 }

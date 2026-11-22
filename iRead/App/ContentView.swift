@@ -5,6 +5,8 @@ struct ContentView: View {
     @EnvironmentObject private var settings: ReaderSettings
     /// 听书是全局组件，书架只负责发起/收起，不承载播放状态
     @ObservedObject private var listening = ListeningCenter.shared
+    /// 书架是否停在「漫画书」分类：漫画不能听，那个分类下要把「听」球收起来
+    @ObservedObject private var shelfMode = ShelfMode.shared
 
     @State private var selection = 0
     @State private var activeBook: Book?
@@ -12,6 +14,13 @@ struct ContentView: View {
     @State private var showWiFiTransfer = false
     @State private var showDownloads = false
     @State private var showSettings = false
+
+    /// 漫画书架、漫画搜索页都不显示「听」球：这两处没有可听的当前书。
+    private var showsListeningDock: Bool {
+        if selection == 2 { return false }
+        if selection == 0 && shelfMode.isComic { return false }
+        return true
+    }
 
     var body: some View {
         TabView(selection: $selection) {
@@ -56,6 +65,15 @@ struct ContentView: View {
                 Label("搜书", systemImage: "magnifyingglass")
             }
             .tag(1)
+
+            // 漫画搜索：独立的第三个入口，和「搜书」互不相干。
+            // 不做成搜书页里的开关：两类源的输入、结果、后续阅读器都不同，
+            // 混在一起每次搜索都会白跑一半源。
+            ComicSearchView()
+                .tabItem {
+                    Label("漫画", systemImage: "rectangle.stack")
+                }
+                .tag(2)
         }
         .tint(settings.theme.accent)
         .preferredColorScheme(settings.theme.colorScheme)
@@ -63,13 +81,24 @@ struct ContentView: View {
         // 用 overlay 而非 safeAreaInset —— 悬浮球不该把书架列表往上顶出一块空白。
         // 挂在根视图上，切标签、退出阅读页都不会消失。
         .overlay(alignment: .bottom) {
-            ListeningFloatingDock(onOpen: openPlayer, bottomInset: 72)
-                .environmentObject(settings)
+            // 漫画书架和漫画搜索页都收起来：这两处没有「当前在听的书」，
+            // 球点开只会进一个空界面。
+            if showsListeningDock {
+                ListeningFloatingDock(onOpen: openPlayer, bottomInset: 72)
+                    .environmentObject(settings)
+            }
         }
         .fullScreenCover(item: $activeBook) { book in
-            ReaderView(bookID: book.id)
-                .environmentObject(store)
-                .environmentObject(settings)
+            // 漫画走图片阅读器，文字书走排版阅读器：两者的「一页」不是一个概念
+            if book.isComic {
+                ComicReaderView(bookID: book.id)
+                    .environmentObject(store)
+                    .environmentObject(settings)
+            } else {
+                ReaderView(bookID: book.id)
+                    .environmentObject(store)
+                    .environmentObject(settings)
+            }
         }
         .sheet(isPresented: $showPlayer) {
             ListeningPlayerView()
@@ -107,6 +136,16 @@ struct ContentView: View {
             // --debug-search：直接切到搜书页（自测/自动化用）
             if args.contains("--debug-search") {
                 selection = 1
+            }
+            // --comic-search=关键字：直接切到漫画页并自动搜索
+            if args.contains(where: { $0.hasPrefix("--comic-search") }) {
+                selection = 2
+            }
+            // --debug-comic：直接打开书架里第一本漫画（自测/截图用）
+            if args.contains("--debug-comic") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    activeBook = store.books.first { $0.isComic }
+                }
             }
             // --voice cantonese / male / female：截图时指定音色档位
             if let i = args.firstIndex(of: "--voice"), i + 1 < args.count {

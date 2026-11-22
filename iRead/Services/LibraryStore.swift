@@ -34,7 +34,8 @@ final class LibraryStore: ObservableObject {
     @Published var lastError: String?
 
     private let fm = FileManager.default
-    private let booksDir: URL
+    /// 漫画要按目录读写图片，扩展与下载器也得拿到这个路径，故不再 private
+    let booksDir: URL
     private let metaURL: URL
     private let bookmarkURL: URL
     private var cache: [String: BookContent] = [:]
@@ -256,6 +257,205 @@ final class LibraryStore: ObservableObject {
         save()
     }
 
+    // MARK: - 漫画
+
+    /// 漫画的存储目录：`Documents/Books/<uuid>.comic/`。
+    /// 一本书一个目录：`meta.json` 存章节与图片清单，`c<章节号>/` 存这一话的图片。
+    /// 和文字书放在同一个 Books 目录里，`library.json` 的 fileName 列两种都装得下
+    /// （目录同样能被 `fileExists` 命中，加载时的过滤逻辑不用改）。
+    func comicDirectory(for book: Book) -> URL {
+        booksDir.appendingPathComponent(book.fileName, isDirectory: true)
+    }
+
+    func comicChapterDirectory(book: Book, chapterIndex: Int) -> URL {
+        comicDirectory(for: book).appendingPathComponent("c\(chapterIndex)", isDirectory: true)
+    }
+
+    func comicMeta(for bookID: String) -> ComicMeta? {
+        guard let book = book(bookID), book.isComic else { return nil }
+        let url = comicDirectory(for: book).appendingPathComponent("meta.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(ComicMeta.self, from: data)
+    }
+
+    func saveComicMeta(_ meta: ComicMeta, for bookID: String) {
+        guard let book = book(bookID), book.isComic else { return }
+        let dir = comicDirectory(for: book)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        guard let data = try? JSONEncoder().encode(meta) else { return }
+        try? data.write(to: dir.appendingPathComponent("meta.json"))
+    }
+
+    /// 网络漫画是否已经入库（同一个书源 + 同一个详情地址视为同一本）
+    func comicBook(remoteKey: String) -> Book? {
+        books.first { $0.isComic && $0.remoteKey == remoteKey }
+    }
+
+    /// 新建一本网络漫画。目录、meta.json、书架条目一次建好，
+    /// 之后下载器只往里补图片，不碰书籍索引以外的东西。
+    @discardableResult
+    func createComicBook(
+        title: String,
+        author: String,
+        sourceID: String,
+        remoteURL: String,
+        chapters: [ChapterLink]
+    ) -> Book {
+        let id = UUID().uuidString
+        let fileName = "\(id).comic"
+        let dir = booksDir.appendingPathComponent(fileName, isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        var meta = ComicMeta()
+        meta.sourceID = sourceID
+        meta.remoteURL = remoteURL
+        meta.chapters = chapters.map {
+            ComicChapter(index: $0.index, title: $0.title, remoteURL: $0.url)
+        }
+        if let data = try? JSONEncoder().encode(meta) {
+            try? data.write(to: dir.appendingPathComponent("meta.json"))
+        }
+
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let book = Book(
+            id: id,
+            title: trimmed.isEmpty ? "未命名漫画" : trimmed,
+            author: author,
+            fileName: fileName,
+            addedAt: Date(),
+            lastReadAt: nil,
+            chapterCount: chapters.count,
+            fileSize: 0,
+            lastChapterIndex: 0,
+            progress: 0,
+            coverHue: Double(books.count % 8) / 8.0 + 0.04,
+            isPinned: false,
+            isFinished: false,
+            source: sourceID,
+            kind: "comic",
+            remoteKey: "\(sourceID)|\(remoteURL)"
+        )
+        var list = books
+        list.insert(book, at: 0)
+        books = list
+        save()
+        return book
+    }
+
+    /// 目录刷新：保留已经下到本地的图片（同一话、同一地址），新章节补空壳。
+    func updateComicChapters(bookID: String, chapters: [ChapterLink]) {
+        guard var meta = comicMeta(for: bookID) else { return }
+        var existing: [Int: ComicChapter] = [:]
+        for chapter in meta.chapters { existing[chapter.index] = chapter }
+        meta.chapters = chapters.map { link in
+            if var old = existing[link.index], old.remoteURL == link.url {
+                old.title = link.title
+                return old
+            }
+            return ComicChapter(index: link.index, title: link.title, remoteURL: link.url)
+        }
+        saveComicMeta(meta, for: bookID)
+        mutateOnMain(bookID) { $0.chapterCount = meta.chapters.count }
+    }
+
+    /// 一话下完（或补了几页）后回写清单并累计体积。
+    func updateComicPages(bookID: String, chapterIndex: Int, pages: [ComicPage], extraBytes: Int64 = 0) {
+        guard var meta = comicMeta(for: bookID),
+              let idx = meta.chapters.firstIndex(where: { $0.index == chapterIndex }) else { return }
+        meta.chapters[idx].pages = pages
+        saveComicMeta(meta, for: bookID)
+        if extraBytes > 0 {
+            mutateOnMain(bookID) { $0.fileSize += extraBytes }
+        }
+    }
+
+    func comicPageURL(bookID: String, chapterIndex: Int, file: String) -> URL? {
+        guard let book = book(bookID), book.isComic else { return nil }
+        return comicChapterDirectory(book: book, chapterIndex: chapterIndex)
+            .appendingPathComponent(file)
+    }
+
+    /// 书架封面：直接用本机第一张已下载的图，省流量也不用等网络
+    func comicCoverURL(for book: Book) -> URL? {
+        guard book.isComic, let meta = comicMeta(for: book.id),
+              let first = meta.firstLocalPage else { return nil }
+        return comicPageURL(bookID: book.id, chapterIndex: first.chapter, file: first.file)
+    }
+
+    /// 导入本地图片当一本漫画。按文件名排序，一话装完。
+    @discardableResult
+    func importComic(images: [URL], title: String) throws -> Book {
+        let sorted = images.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        guard !sorted.isEmpty else { throw LibraryError.unreadable }
+
+        let id = UUID().uuidString
+        let fileName = "\(id).comic"
+        let dir = booksDir.appendingPathComponent(fileName, isDirectory: true)
+        let chapterDir = dir.appendingPathComponent("c0", isDirectory: true)
+        try fm.createDirectory(at: chapterDir, withIntermediateDirectories: true)
+
+        var pages: [ComicPage] = []
+        var bytes: Int64 = 0
+        for (i, url) in sorted.enumerated() {
+            let secured = url.startAccessingSecurityScopedResource()
+            defer { if secured { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? Data(contentsOf: url), let image = UIImage(data: data) else { continue }
+            // 相册里可能是 HEIC，也可能是 4000px 的原图。统一转 JPEG 并限制长边，
+            // 既省空间，也避免阅读器里几十张巨图同时解码把内存顶爆。
+            let normalized = image.normalizedForComic(maxSide: 2000)
+            guard let jpeg = normalized.jpegData(compressionQuality: 0.9) else { continue }
+            let name = String(format: "%03d.jpg", i + 1)
+            guard (try? jpeg.write(to: chapterDir.appendingPathComponent(name))) != nil else { continue }
+            bytes += Int64(jpeg.count)
+            pages.append(ComicPage(
+                remote: "",
+                file: name,
+                width: Int(normalized.size.width),
+                height: Int(normalized.size.height)
+            ))
+        }
+        guard !pages.isEmpty else { throw LibraryError.unreadable }
+
+        var meta = ComicMeta()
+        meta.chapters = [ComicChapter(index: 0, title: "全一话", remoteURL: "", pages: pages)]
+        if let data = try? JSONEncoder().encode(meta) {
+            try? data.write(to: dir.appendingPathComponent("meta.json"))
+        }
+
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let book = Book(
+            id: id,
+            title: trimmed.isEmpty ? "本地漫画" : trimmed,
+            author: "",
+            fileName: fileName,
+            addedAt: Date(),
+            lastReadAt: nil,
+            chapterCount: 1,
+            fileSize: bytes,
+            lastChapterIndex: 0,
+            progress: 0,
+            coverHue: Double(books.count % 8) / 8.0 + 0.04,
+            isPinned: false,
+            isFinished: false,
+            source: "imported",
+            kind: "comic"
+        )
+        var list = books
+        list.insert(book, at: 0)
+        books = list
+        save()
+        return book
+    }
+
+    /// `@Published` 只能在主线程改：下载器在后台把图写完再回来更新书架
+    private func mutateOnMain(_ id: String, _ block: @escaping (inout Book) -> Void) {
+        if Thread.isMainThread {
+            mutate(id, block)
+        } else {
+            DispatchQueue.main.async { self.mutate(id, block) }
+        }
+    }
+
     // MARK: - 元数据更新
 
     func togglePin(book: Book) { mutate(book.id) { $0.isPinned.toggle() } }
@@ -395,5 +595,27 @@ final class LibraryStore: ObservableObject {
             ))
         }
         save()
+    }
+}
+
+// MARK: - 图片规整
+
+private extension UIImage {
+    /// 长边超过 `maxSide` 就等比缩到 `maxSide`，同时把 EXIF 旋正。
+    ///
+    /// 相册里导出的图可能是 HEIC、可能带 90° 旋转信息、也可能有 4000px 长边。
+    /// 漫画是一屏一张整图，几十张原图同时驻留会把内存顶爆，
+    /// 所以导入时就统一成 JPEG、顺手缩到手机看得清的尺寸。
+    func normalizedForComic(maxSide: CGFloat) -> UIImage {
+        let longest = max(size.width, size.height)
+        let ratio = longest > maxSide ? maxSide / longest : 1
+        let target = CGSize(width: max(1, size.width * ratio), height: max(1, size.height * ratio))
+        let format = UIGraphicsImageRendererFormat.default()
+        // 尺寸按像素算：保持 1x，避免 2x/3x 屏又把像素数乘回去
+        format.scale = 1
+        format.opaque = true
+        return UIGraphicsImageRenderer(size: target, format: format).image { _ in
+            draw(in: CGRect(origin: .zero, size: target))
+        }
     }
 }
