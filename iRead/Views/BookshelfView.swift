@@ -907,9 +907,15 @@ private struct ComicShelfCover: View {
             )
 
             if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
+                // 必须显式约束到容器尺寸：`scaledToFill` 会把 ZStack 撑得比卡片大，
+                // 外层 clipShape 一裁，角落上的角标就跟着被切掉一半。
+                GeometryReader { geo in
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                }
             } else {
                 VStack(spacing: 3) {
                     Image(systemName: "rectangle.stack")
@@ -929,35 +935,28 @@ private struct ComicShelfCover: View {
 
             if showsBadges {
                 VStack {
-                    HStack(alignment: .top, spacing: 4) {
+                    HStack(alignment: .top, spacing: 3) {
                         if book.isPinned { cornerBadge(systemName: "pin.fill", rotation: -25) }
                         Spacer(minLength: 0)
+                        // 已缓存话数：下过才显示。放右上角和「已读」勾同排，
+                        // 不和封面底部的书名抢位置
+                        if let cacheCount, cacheCount.have > 0 {
+                            HStack(spacing: 1.5) {
+                                Image(systemName: "arrow.down.circle.fill")
+                                    .font(.system(size: 7, weight: .bold))
+                                Text("\(cacheCount.have)/\(cacheCount.total)")
+                                    .font(.system(size: 8, weight: .semibold).monospacedDigit())
+                            }
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 3.5)
+                            .padding(.vertical, 1.5)
+                            .background(Capsule().fill(Color.black.opacity(0.5)))
+                        }
                         if book.isFinished { cornerBadge(systemName: "checkmark", rotation: 0) }
                     }
                     Spacer(minLength: 0)
-                    // 已缓存话数：下过才显示。没下过的书封面就是空白占位，一眼能分辨
                 }
                 .padding(5)
-
-                if let cacheCount, cacheCount.have > 0 {
-                    VStack {
-                        Spacer(minLength: 0)
-                        HStack(spacing: 2) {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .font(.system(size: 7, weight: .bold))
-                            Text("\(cacheCount.have)/\(cacheCount.total)")
-                                .font(.system(size: 8, weight: .semibold).monospacedDigit())
-                        }
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1.5)
-                        .background(Capsule().fill(Color.black.opacity(0.48)))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(.horizontal, 5)
-                    // 让开底部那条阅读进度线
-                    .padding(.bottom, 6)
-                }
             }
 
             // 阅读进度：贴底细线，和文字书保持一致
