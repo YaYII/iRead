@@ -95,7 +95,7 @@ struct ReaderView: View {
             let args = ProcessInfo.processInfo.arguments
             if args.contains("--debug-chapters") || args.contains("--debug-bookmarks") {
                 try? await Task.sleep(nanoseconds: 700_000_000)
-                if args.contains("--debug-chapters") { showChapters = true }
+                if args.contains("--debug-chapters") { openChapters() }
                 if args.contains("--debug-bookmarks") { showBookmarks = true }
             }
         }
@@ -431,7 +431,7 @@ struct ReaderView: View {
             Spacer()
 
             HStack(spacing: 0) {
-                toolbarItem("目录", "list.bullet") { showChapters = true }
+                toolbarItem("目录", "list.bullet") { openChapters() }
                 toolbarItem("书签", "bookmark") { showBookmarks = true }
                 toolbarItem("排版", "textformat.size") { showSettings = true }
                 toolbarItem("沉浸", "eye.slash") { showChrome = false }
@@ -671,6 +671,34 @@ struct ReaderView: View {
     }
 
     // MARK: - 进度 / 书签
+
+    /// 打开目录：先把后台新下好的章节补进来，再弹窗。
+    ///
+    /// `content` 是打开这本书那一刻的快照。下载在后台继续时它不会自己长，
+    /// 不补的话目录里刚下完的章一直显示「未下载」，点了也读不到。
+    /// 只在「落地章数比内存里多」时才重新解析，平时打开目录不多做一次解析。
+    private func openChapters() {
+        reloadContentIfGrown()
+        showChapters = true
+    }
+
+    private func reloadContentIfGrown() {
+        guard let current = content, let book = store.book(bookID),
+              book.downloadedChapters > current.chapterCount,
+              let loaded = store.content(for: bookID),
+              loaded.chapterCount > current.chapterCount else { return }
+        // 位置不丢：当前章 + 章内字符，重排后原样贴回去
+        let chapter = min(chapterIndex, loaded.chapterCount - 1)
+        let char = min(scrollProxy.characterIndex, loaded.chapterText(at: chapter).length)
+        content = loaded
+        typesetter = ChapterTextProvider(content: loaded, settings: settings)
+        chapterIndex = chapter
+        scrollAnchorChapter = chapter
+        scrollAnchorChar = char
+        scrollProxy.chapter = chapter
+        scrollProxy.characterIndex = char
+        refreshToken = UUID()
+    }
 
     /// 顶栏的下载进度（没下完才显示）。以前要知道下到第几章，
     /// 得退出阅读、切到搜书页点下载胶囊，翻页时根本看不到。

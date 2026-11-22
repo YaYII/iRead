@@ -16,6 +16,12 @@ struct ChapterListView: View {
     // 主题配色用单例读取，避免依赖外层是否注入 environmentObject
     @ObservedObject private var settings = ReaderSettings.shared
     @State private var query = ""
+    /// 书源那边的完整目录（只有没下完时才去取）。
+    /// 本地文件里没有未下载的章，光靠 content 列不出「还差哪几章」。
+    @State private var remoteTitles: [String]?
+    /// 点了未下载的章时弹提示
+    @State private var pendingIndex: Int?
+    @State private var showUndownloadedAlert = false
 
     private var theme: ReadingTheme { settings.theme }
 
@@ -41,10 +47,34 @@ struct ChapterListView: View {
         return "已下 \(liveBook.downloadedChapters)/\(total) 章 · 还差 \(missing) 章"
     }
 
-    private var filteredChapters: [Chapter] {
+    /// 目录行：可能已下载，也可能只在书源里（灰掉、点了提示先下载）
+    private struct CatalogRow: Identifiable {
+        let index: Int
+        let title: String
+        let isDownloaded: Bool
+        var id: Int { index }
+    }
+
+    /// 合并后的目录。
+    ///
+    /// 下载过的用本地标题（阅读器显示的就是它）；没下过的用书源标题并置灰。
+    /// 书源目录拿回来之前、或它并不比本地长（已下全 / 解析有偏差），
+    /// 就退回「只列本地章节」的老行为，绝不凭空造行。
+    private var allRows: [CatalogRow] {
+        let local = content.chapters
+        guard let remote = remoteTitles, remote.count > local.count else {
+            return local.map { CatalogRow(index: $0.index, title: $0.title, isDownloaded: true) }
+        }
+        return remote.enumerated().map { i, title in
+            let downloaded = i < local.count
+            return CatalogRow(index: i, title: downloaded ? local[i].title : title, isDownloaded: downloaded)
+        }
+    }
+
+    private var filteredRows: [CatalogRow] {
         let keyword = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !keyword.isEmpty else { return content.chapters }
-        return content.chapters.filter { $0.title.localizedCaseInsensitiveContains(keyword) }
+        guard !keyword.isEmpty else { return allRows }
+        return allRows.filter { $0.title.localizedCaseInsensitiveContains(keyword) }
     }
 
     var body: some View {
@@ -106,7 +136,7 @@ struct ChapterListView: View {
 
     private var chapterList: some View {
         List {
-            if filteredChapters.isEmpty {
+            if filteredRows.isEmpty {
                 Text("未找到匹配的章节")
                     .font(.subheadline)
                     .foregroundStyle(theme.secondary)
@@ -114,32 +144,43 @@ struct ChapterListView: View {
                     .listRowBackground(theme.background)
                     .listRowSeparator(.hidden)
             } else {
-                ForEach(filteredChapters) { chapter in
+                ForEach(filteredRows) { row in
                     Button {
-                        onSelect(chapter.index)
-                        dismiss()
+                        if row.isDownloaded {
+                            onSelect(row.index)
+                            dismiss()
+                        } else {
+                            // 没下过的章没法阅读，先引导去续传
+                            pendingIndex = row.index
+                            showUndownloadedAlert = true
+                        }
                     } label: {
                         HStack(spacing: 12) {
                             RoundedRectangle(cornerRadius: 2)
-                                .fill(chapter.index == currentIndex ? theme.accent : Color.clear)
+                                .fill(row.index == currentIndex ? theme.accent : Color.clear)
                                 .frame(width: 3, height: 22)
 
-                            Text("第 \(chapter.index + 1) 章")
+                            Text("第 \(row.index + 1) 章")
                                 .font(.caption)
                                 .foregroundStyle(theme.secondary)
                                 .frame(width: 58, alignment: .leading)
 
-                            Text(chapter.title)
+                            Text(row.title)
                                 .font(.body)
-                                .foregroundStyle(chapter.index == currentIndex ? theme.accent : theme.foreground)
+                                .foregroundStyle(rowTitleColor(row))
                                 .lineLimit(1)
 
                             Spacer(minLength: 4)
 
-                            if chapter.index == currentIndex {
+                            if row.index == currentIndex {
                                 Image(systemName: "checkmark")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(theme.accent)
+                            } else if !row.isDownloaded {
+                                Text("未下载")
+                                    .font(.caption2)
+                                    .foregroundStyle(theme.secondary)
+                                    .fixedSize()
                             }
                         }
                         .contentShape(Rectangle())
@@ -147,7 +188,7 @@ struct ChapterListView: View {
                     }
                     .buttonStyle(.plain)
                     .listRowBackground(
-                        chapter.index == currentIndex
+                        row.index == currentIndex
                             ? theme.accent.opacity(0.08)
                             : theme.background
                     )
@@ -159,15 +200,57 @@ struct ChapterListView: View {
         .scrollContentBackground(.hidden)
         .background(theme.background)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: book.id) {
+            // 仅供截图/自测：预置搜索词，用来把某一批章节筛到一屏里
+            let args = ProcessInfo.processInfo.arguments
+            if let qi = args.firstIndex(of: "--debug-query"), qi + 1 < args.count {
+                query = args[qi + 1]
+            }
+            // 只在有缺口时向书源要一次完整目录；下载器里已有缓存就不会再发请求。
+            // 拿不到（网络 / 源挂了）就安静地退回只列本地章节，不打扰阅读。
+            guard liveBook.missingChapters > 0 else { return }
+            if let detail = await NovelDownloadManager.shared.catalog(for: book.id) {
+                remoteTitles = detail.chapters.map(\.title)
+            }
+            // 仅供截图/自测：直接弹出「这一章还没下载」的提示
+            if ProcessInfo.processInfo.arguments.contains("--debug-undownloaded") {
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                pendingIndex = content.chapterCount
+                showUndownloadedAlert = true
+            }
+        }
+        .alert(pendingIndex.map { "第 \($0 + 1) 章还没下载" } ?? "这一章还没下载",
+               isPresented: $showUndownloadedAlert) {
+            Button("下载剩余 \(missing) 章") {
+                downloadManager.continueDownload(book.id)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            // 不写「本地只有前 N 章」：下载在后台继续，弹窗文案里的 N 一眨眼就过期，
+            // 和头部「已下 x/711」对不上反而让人怀疑。只说清行为和后果。
+            Text("本地还没有这一章的正文。下载会从已下的位置接着下，不会重下前面的章节。")
+        }
+    }
+
+    private func rowTitleColor(_ row: CatalogRow) -> Color {
+        if !row.isDownloaded { return theme.secondary }
+        return row.index == currentIndex ? theme.accent : theme.foreground
     }
 
     // MARK: - 底部提示
 
+    /// 是否已经把书源目录合进来了（合并后才会有灰色未下载行）
+    private var showsRemoteRows: Bool {
+        (remoteTitles?.count ?? 0) > content.chapterCount
+    }
+
     private var footer: some View {
         VStack(spacing: 8) {
             if missing > 0 {
-                // 目录里没有未下载的章，这里说明一句，避免误以为全书就这么长
-                Text("目录只显示已下载的章节，还有 \(missing) 章未下载")
+                // 目录拿回来了就说明「灰色那几章还没下」；没拿回来也要讲清楚列表为什么不全
+                Text(showsRemoteRows
+                     ? "灰色章节还没下载，点一下可以继续下载"
+                     : "目录只显示已下载的章节，还有 \(missing) 章未下载")
                     .font(.caption)
                     .foregroundStyle(theme.secondary)
 

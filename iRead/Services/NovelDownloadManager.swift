@@ -464,6 +464,15 @@ final class NovelDownloadManager: ObservableObject {
     /// 拿这本书的目录与书源。
     /// 内存里有就直接用；重启后内存是空的，按 `Book.remoteURL` 回源抓一次目录
     /// （只有一次目录请求，不碰正文），拿到后缓存起来，真正开跑时不再重复抓。
+    /// 完整目录（含还没下载的章节）。
+    ///
+    /// 阅读器的目录页光靠本地文件列不全：没下过的章根本不在文件里。
+    /// 这里优先用内存缓存（正文正在下的时候本来就有完整目录），
+    /// 没有才回源抓一次 —— 一个页面生命周期最多一次，不额外轮询。
+    func catalog(for bookID: String) async -> NovelDetail? {
+        await context(for: bookID)?.detail
+    }
+
     private func context(for bookID: String) async -> (detail: NovelDetail, source: NovelSource)? {
         if let cached = contexts[bookID] { return cached }
         let hit = await MainActor.run { () -> (book: Book, source: NovelSource, url: String)? in
