@@ -20,6 +20,8 @@ final class WritingPipeline: ObservableObject {
         case writing(Int)
         case reviewing(Int)
         case repairing(Int)
+        /// 按读者写在卡片上的意见改某一章
+        case rewriting(Int)
         case paused
         case finished
         case failed(String)
@@ -27,7 +29,7 @@ final class WritingPipeline: ObservableObject {
         var isRunning: Bool {
             switch self {
             case .idle, .paused, .finished, .failed: return false
-            case .planning, .writing, .reviewing, .repairing: return true
+            case .planning, .writing, .reviewing, .repairing, .rewriting: return true
             }
         }
 
@@ -38,10 +40,26 @@ final class WritingPipeline: ObservableObject {
             case .writing(let n): return "正在写第 \(n) 章"
             case .reviewing(let n): return "正在审第 \(n) 章"
             case .repairing(let n): return "第 \(n) 章审查未过，正在改"
+            case .rewriting(let n): return "正在按意见改第 \(n) 章"
             case .paused: return "已暂停"
             case .finished: return "已经写完"
             case .failed(let reason): return reason
             }
+        }
+    }
+
+    /// 这一轮在干什么。界面文案和完成页的措辞按它分岔 ——
+    /// 「连写 3 章」和「改 3 章」是两件事，用同一句「已经写完」会让人以为又多了三章。
+    enum RunMode { case write, rewrite }
+
+    @Published private(set) var mode: RunMode = .write
+
+    /// 完成页的标题。重写模式不说「写完」，因为章数没变。
+    var resultTitle: String {
+        switch stage {
+        case .finished: return mode == .rewrite ? "已经改完" : "已经写完"
+        case .paused: return "已暂停"
+        default: return stage.label
         }
     }
 
@@ -86,6 +104,7 @@ final class WritingPipeline: ObservableObject {
         }
         self.projectID = projectID
         self.continueOnFail = continueOnFail
+        mode = .write
         target = chapters
         completed = 0
         flagged = []
@@ -105,7 +124,53 @@ final class WritingPipeline: ObservableObject {
     func pause() {
         guard stage.isRunning else { return }
         pauseRequested = true
-        add(.info, "收到暂停：写完这一章就停")
+        add(.info, mode == .rewrite ? "收到暂停：改完这一章就停" : "收到暂停：写完这一章就停")
+    }
+
+    /// 按读者写在章节卡上的意见，串行重写这些章。
+    ///
+    /// 为什么是「串行 + 逐章落盘」而不是一次把意见全塞给模型：
+    /// 一次改多章，模型看不见自己刚改过的前文，越改越飘；而逐章落盘意味着
+    /// 改到第三章不想改了，前两章已经是新的，随时能停、能看、能接着改。
+    ///
+    /// `indexes` 为 nil 时取当前所有带意见的章。
+    func startRewrite(projectID: String, indexes: [Int]? = nil) {
+        guard !stage.isRunning else { return }
+        guard AISettings.shared.isConfigured else {
+            stage = .failed("还没有配置 AI 服务")
+            logs = [LogLine(kind: .error, text: "到「设置 → AI 写作」选一个服务商、填上 API Key。")]
+            return
+        }
+        guard let project = WritingStore.shared.project(projectID) else {
+            stage = .failed("这本稿子找不到了")
+            return
+        }
+        // 只认真的有意见的章：没意见的章不该被「顺手重写」掉
+        let targets = (indexes ?? project.commentedIndexes).filter { index in
+            guard project.segments.indices.contains(index) else { return false }
+            let note = (project.segments[index].comment ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return !note.isEmpty
+        }
+        guard !targets.isEmpty else {
+            stage = .failed("没有可改的章节")
+            logs = [LogLine(kind: .info, text: "先在章节卡上写修改意见，再来按意见重写。")]
+            return
+        }
+
+        self.projectID = projectID
+        mode = .rewrite
+        target = targets.count
+        completed = 0
+        flagged = []
+        logs = []
+        streamText = ""
+        activePlan = []
+        pauseRequested = false
+        stage = .rewriting(targets[0] + 1)
+        UIApplication.shared.isIdleTimerDisabled = true
+        task = Task { [weak self] in
+            await self?.rewriteLoop(projectID: projectID, indexes: targets)
+        }
     }
 
     /// 立即停，当前章不保存（半章比没有更难受）
@@ -329,6 +394,134 @@ final class WritingPipeline: ObservableObject {
         }
     }
 
+    // MARK: - 按意见重写
+
+    /// 逐章改：生成 → 原位替换 → 清意见 → 落盘 → 下一章。
+    ///
+    /// 与 `writeOneChapter` 的两处关键差别：
+    /// 1. **不动章纲、不改章数**。改写是原地替换，`plan` 一条都不消费 ——
+    ///    后面的章节仍按原计划走，不会因为改了第三章就把第四章的走向挤掉。
+    /// 2. **不跑审查**。审查判的是「有没有硬伤」，而这里的问题是读者自己指出的；
+    ///    再花一次调用去问同一件事，只会多一轮等待和一份新意见。
+    ///
+    /// 没改成的章会保留意见，下次点「重写」还会被带上 —— 失败不会把用户的批注吃掉。
+    private func rewriteLoop(projectID: String, indexes: [Int]) async {
+        guard WritingStore.shared.project(projectID) != nil else {
+            fail("这本稿子找不到了")
+            return
+        }
+        var done = 0
+
+        do {
+            for index in indexes {
+                try Task.checkCancellation()
+                guard let current = WritingStore.shared.project(projectID) else {
+                    fail("这本稿子被删掉了")
+                    return
+                }
+                guard current.segments.indices.contains(index) else {
+                    add(.warn, "第 \(index + 1) 章已经不在书里了，跳过")
+                    continue
+                }
+                let segment = current.segments[index]
+                let note = (segment.comment ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !note.isEmpty else { continue }
+
+                stage = .rewriting(index + 1)
+                streamText = ""
+                thinkingChars = 0
+                add(.info, "开始改第 \(index + 1) 章 · 意见：\(Self.oneLine(note, 40))")
+
+                // 摘要只取**这一章之前**的：本章自己的旧摘要正是要改掉的那个版本，
+                // 把它塞回上下文，模型容易照着旧结论把意见又改回去。
+                var before = current
+                before.segments = Array(current.segments.prefix(index))
+                let raw = try await generate(
+                    WritingPrompts.rewriteChapterAt(
+                        project: current,
+                        index: index,
+                        segment: segment,
+                        previousTail: index > 0 ? current.segments[index - 1].text : "",
+                        context: WritingPrompts.Context(
+                            outline: current.outlineText,
+                            recaps: WritingPrompts.recapLines(before),
+                            goal: segment.goal
+                        ),
+                        comment: note
+                    ),
+                    temperature: 0.7
+                )
+
+                try Task.checkCancellation()
+
+                // 生成要几分钟，期间用户可能删了这章、或在别处改过它。
+                // 用 id 再确认一次：宁可少改一章，也不能把 user 刚敲的字覆盖掉。
+                guard var latest = WritingStore.shared.project(projectID) else {
+                    fail("这本稿子被删掉了")
+                    return
+                }
+                guard latest.segments.indices.contains(index),
+                      latest.segments[index].id == segment.id else {
+                    add(.warn, "第 \(index + 1) 章在这期间被删了或挪了位置，跳过")
+                    continue
+                }
+
+                let parsed = WritingPrompts.splitChapter(raw, fallbackTitle: segment.title)
+                let words = WritingText.count(parsed.body)
+                // 三百字以下基本是「模型只回了个开头」或者拒答，别拿它覆盖掉整章
+                guard words >= 300 else {
+                    add(.warn, "第 \(index + 1) 章只改出 \(words) 字，像是没改完，保留原样")
+                    continue
+                }
+
+                var next = latest.segments[index]
+                next.title = parsed.title
+                next.text = parsed.body
+                next.createdAt = Date()
+                next.generated = true
+                // 正文换了，这三项同时过期：摘要要重出、审查问题要重判、意见已经落实
+                next.recap = nil
+                next.issues = nil
+                next.comment = nil
+                next.commentAt = nil
+                latest.segments[index] = next
+                WritingStore.shared.update(latest)
+
+                done += 1
+                completed += 1
+                streamText = ""
+                add(.ok, "第 \(index + 1) 章改好了 · \(words) 字")
+
+                // 提示词写了「篇幅 ±15%」，但它只是提示词。偏太多说明这一章被重写了，
+                // 而不是被改了几处 —— 这种事得让用户自己看一眼才算数。
+                let old = segment.wordCount
+                if old > 0, abs(words - old) * 100 / old > 30 {
+                    add(.warn, "篇幅从 \(old) 字变成 \(words) 字，改动偏大，回头核一下")
+                }
+
+                if pauseRequested {
+                    pauseRequested = false
+                    UIApplication.shared.isIdleTimerDisabled = false
+                    stage = .paused
+                    add(.info, "已暂停：改完 \(done) 章，剩下的意见还留着，下次接着点重写")
+                    return
+                }
+            }
+
+            UIApplication.shared.isIdleTimerDisabled = false
+            if done < indexes.count {
+                add(.warn, "\(indexes.count - done) 章没改（见上面的原因），意见还留着")
+            }
+            stage = .finished
+            add(.ok, "按意见改完 \(done) 章")
+        } catch is CancellationError {
+            UIApplication.shared.isIdleTimerDisabled = false
+            if stage.isRunning { stage = .paused }
+        } catch {
+            fail(error.localizedDescription)
+        }
+    }
+
     // MARK: - 生成（带退避重试）
 
     private func generate(
@@ -370,6 +563,15 @@ final class WritingPipeline: ObservableObject {
         if logs.count > 200 { logs.removeFirst(logs.count - 200) }
         // 真机拿不到 stdout，但模拟器/自测时这一行能直接看出流水线走到哪一步
         print("[iRead] pipeline: \(text)")
+    }
+
+    /// 意见是多行的一段话，日志里只留一行、去掉换行带来的大段空白
+    static func oneLine(_ text: String, _ limit: Int) -> String {
+        let flat = text
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return flat.count > limit ? String(flat.prefix(limit)) + "…" : flat
     }
 
     private func fail(_ reason: String) {

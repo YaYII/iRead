@@ -23,6 +23,13 @@ struct AutoWriteSheet: View {
     private var theme: ReadingTheme { settings.theme }
     private var project: WritingProject? { writing.project(projectID) }
 
+    /// 标题跟着这一轮在干的事走：同一个面板既写新章也改旧章，
+    /// 标题还写「连写」会让人以为按错了。
+    private var navTitle: String {
+        if mode == .config { return "连写" }
+        return pipeline.mode == .rewrite ? "按意见重写" : "连写"
+    }
+
     var body: some View {
         NavigationStack {
             Group {
@@ -35,7 +42,7 @@ struct AutoWriteSheet: View {
             // 完成页内容比屏幕短，不撑满的话sheet 底下的白底会从上面露出来一条
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(theme.background.ignoresSafeArea())
-            .navigationTitle("连写")
+            .navigationTitle(navTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -334,7 +341,9 @@ struct AutoWriteSheet: View {
 
     private var runningFooter: some View {
         VStack(spacing: 8) {
-            Text("关闭这个页面不会中断连写")
+            Text(pipeline.mode == .rewrite
+                 ? "关闭这个页面不会中断改写"
+                 : "关闭这个页面不会中断连写")
                 .font(.caption2)
                 .foregroundStyle(theme.secondary)
 
@@ -342,7 +351,7 @@ struct AutoWriteSheet: View {
                 Button {
                     pipeline.pause()
                 } label: {
-                    Text("写完这章暂停")
+                    Text(pipeline.mode == .rewrite ? "改完这章暂停" : "写完这章暂停")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(theme.foreground)
                         .frame(maxWidth: .infinity)
@@ -376,12 +385,16 @@ struct AutoWriteSheet: View {
                 Image(systemName: iconForStage)
                     .font(.system(size: 30, weight: .light))
                     .foregroundStyle(colorForStage)
-                Text(pipeline.stage.label)
+                Text(pipeline.resultTitle)
                     .font(.headline)
                     .foregroundStyle(theme.foreground)
                     .multilineTextAlignment(.center)
                 if let project {
-                    Text("共 \(project.segments.count) 章 · \(project.wordCount) 字")
+                    // 改写不增章，所以这里不能只说「共 N 章」——
+                    // 得说清「改了哪几章」，否则从 8 章变 8 章，用户以为没跑成
+                    Text(pipeline.mode == .rewrite
+                         ? "改了 \(pipeline.completed) 章 · 全书共 \(project.segments.count) 章"
+                         : "共 \(project.segments.count) 章 · \(project.wordCount) 字")
                         .font(.caption)
                         .foregroundStyle(theme.secondary)
                 }
@@ -406,9 +419,14 @@ struct AutoWriteSheet: View {
                 .buttonStyle(.plain)
 
                 Button {
-                    mode = .config
+                    if pipeline.mode == .rewrite {
+                        // 改完最想干的事是回去看改后的稿子，不是再写几章
+                        dismiss()
+                    } else {
+                        mode = .config
+                    }
                 } label: {
-                    Text("再写几章")
+                    Text(pipeline.mode == .rewrite ? "看改后的章节" : "再写几章")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(theme.background)
                         .frame(maxWidth: .infinity)

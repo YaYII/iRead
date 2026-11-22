@@ -70,6 +70,14 @@ struct WritingSegment: Identifiable, Codable, Hashable {
     var recap: String? = nil
     /// 最近一次审查没过、但用户选择保留时留下的问题
     var issues: [String]? = nil
+    /// 读者（= 作者本人）写在卡片上的修改意见。
+    ///
+    /// 这是「审阅」这一步的载体：一章写完先自己看，看到哪儿不对就写在卡片上，
+    /// 不必当场等模型改（那会被迫一口气盯着）；全部看完再一次性按意见重写。
+    /// 意见是**指令**，和审查产出（`issues`）不是一回事：后者是机器判的硬伤，前者是人要的改法。
+    var comment: String? = nil
+    /// 意见写下的时间，仅用于「最近批注」排序和显示
+    var commentAt: Date? = nil
 
     /// 字数一律由程序数，不问模型。
     ///
@@ -131,6 +139,16 @@ struct WritingProject: Identifiable, Codable, Hashable {
 
     var lastPreview: String {
         segments.last?.preview ?? "还没有正文"
+    }
+
+    /// 写了修改意见、还没重写的章节下标（升序）。
+    ///
+    /// 「重写」只认这一份清单：没写意见的章不动 —— 这条是「手术刀」的前提，
+    /// 否则一按重写就把整本重来，用户审阅时做的判断全白费。
+    var commentedIndexes: [Int] {
+        segments.enumerated()
+            .filter { ($0.element.comment ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
+            .map(\.offset)
     }
 }
 

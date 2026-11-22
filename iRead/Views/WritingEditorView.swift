@@ -14,6 +14,8 @@ struct WritingEditorView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var editingSegment: WritingSegment?
+    /// 正在写修改意见的那一章
+    @State private var commentingSegment: WritingSegment?
     /// 生成请求打包成一个值再弹 sheet。
     ///
     /// 之前是 headline / detail / messages / isPresented 四个 @State 分开设，
@@ -74,6 +76,10 @@ struct WritingEditorView: View {
                     ChapterEditorView(projectID: projectID, segmentID: segment.id)
                         .environmentObject(settings)
                 }
+            }
+            .sheet(item: $commentingSegment) { segment in
+                ChapterCommentSheet(projectID: projectID, segmentID: segment.id)
+                    .environmentObject(settings)
             }
             .sheet(item: $request) { item in
                 GenerationSheet(
@@ -180,30 +186,36 @@ struct WritingEditorView: View {
                     emptyChapterCard
                 } else {
                     ForEach(Array(project.segments.enumerated()), id: \.element.id) { index, segment in
-                        Button {
-                            editingSegment = segment
-                        } label: {
-                            chapterCard(index: index, segment: segment)
-                        }
-                        .buttonStyle(.plain)
-                        .contextMenu {
-                            Button {
-                                startRewrite(index)
-                            } label: {
-                                Label("重写本章", systemImage: "arrow.clockwise")
+                        // 用 onTapGesture 而不是外层 Button：卡片底部自己要放两个按钮
+                        // （写意见、按意见改这章），嵌在 Button 里的 Button 点不动。
+                        chapterCard(index: index, segment: segment)
+                            .contentShape(Rectangle())
+                            .onTapGesture { editingSegment = segment }
+                            .contextMenu {
+                                Button {
+                                    commentingSegment = segment
+                                } label: {
+                                    Label(hasComment(segment) ? "改修改意见" : "写修改意见",
+                                          systemImage: "text.bubble")
+                                }
+                                Button {
+                                    startRewrite(index)
+                                } label: {
+                                    Label(hasComment(segment) ? "按意见改本章" : "重写本章",
+                                          systemImage: "arrow.clockwise")
+                                }
+                                Button {
+                                    pendingRewrite = index
+                                } label: {
+                                    Label("从这一章往后重写", systemImage: "arrow.triangle.branch")
+                                }
+                                Divider()
+                                Button(role: .destructive) {
+                                    deleteSegment(segment)
+                                } label: {
+                                    Label("删除本章", systemImage: "trash")
+                                }
                             }
-                            Button {
-                                pendingRewrite = index
-                            } label: {
-                                Label("从这一章往后重写", systemImage: "arrow.triangle.branch")
-                            }
-                            Divider()
-                            Button(role: .destructive) {
-                                deleteSegment(segment)
-                            } label: {
-                                Label("删除本章", systemImage: "trash")
-                            }
-                        }
                     }
                 }
             }
@@ -288,7 +300,8 @@ struct WritingEditorView: View {
     }
 
     private func chapterCard(index: Int, segment: WritingSegment) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let note = commentText(segment)
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Text(segment.title.isEmpty ? "第 \(index + 1) 章" : segment.title)
                     .font(.subheadline.weight(.semibold))
@@ -304,6 +317,11 @@ struct WritingEditorView: View {
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.orange)
                 }
+                if !note.isEmpty {
+                    Image(systemName: "text.bubble.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(theme.accent)
+                }
                 Spacer(minLength: 0)
                 Text("\(segment.wordCount) 字")
                     .font(.caption2.monospacedDigit())
@@ -315,19 +333,84 @@ struct WritingEditorView: View {
                     .foregroundStyle(.orange)
                     .lineLimit(2)
             }
+            if !note.isEmpty {
+                // 意见要在卡片上就能看见：审阅时靠它一眼分出「哪些章已经批过」，
+                // 只留一个图标的话，八章里哪几章写了什么就得逐个点进去看。
+                HStack(alignment: .top, spacing: 5) {
+                    Image(systemName: "text.bubble")
+                        .font(.system(size: 9))
+                        .padding(.top, 1)
+                    Text(note.replacingOccurrences(of: "\n", with: " "))
+                        .font(.caption2)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(theme.accent)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 7).fill(theme.accent.opacity(0.09)))
+            }
             Text(segment.preview)
                 .font(.custom("Songti SC", size: 14))
                 .foregroundStyle(theme.foreground.opacity(0.75))
                 .lineLimit(3)
                 .lineSpacing(4)
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+            Divider().overlay(theme.secondary.opacity(0.12))
+
+            HStack(spacing: 14) {
+                Button {
+                    commentingSegment = segment
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "square.and.pencil")
+                            .font(.system(size: 10))
+                        Text(note.isEmpty ? "写修改意见" : "改意见")
+                            .font(.caption2.weight(.medium))
+                    }
+                    .foregroundStyle(note.isEmpty ? theme.secondary : theme.accent)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                if !note.isEmpty {
+                    Button {
+                        rewriteOne(index)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "wand.and.stars")
+                                .font(.system(size: 10))
+                            Text("按意见改这章")
+                                .font(.caption2.weight(.medium))
+                        }
+                        .foregroundStyle(theme.accent)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(pipeline.stage.isRunning)
+                    .opacity(pipeline.stage.isRunning ? 0.4 : 1)
+                }
+
+                Spacer(minLength: 0)
+            }
         }
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 12).fill(theme.foreground.opacity(0.05)))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(theme.secondary.opacity(0.15), lineWidth: 0.5)
+                .stroke(theme.accent.opacity(note.isEmpty ? 0 : 0.35), lineWidth: 0.8)
         )
+    }
+
+    private func commentText(_ segment: WritingSegment) -> String {
+        (segment.comment ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func hasComment(_ segment: WritingSegment) -> Bool {
+        !commentText(segment).isEmpty
     }
 
     // MARK: - 底部生成条
@@ -340,7 +423,7 @@ struct WritingEditorView: View {
                 } label: {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.mini)
-                        Text("连写中 · \(pipeline.stage.label) · \(pipeline.completed)/\(pipeline.target)")
+                        Text("\(pipeline.mode == .rewrite ? "按意见改中" : "连写中") · \(pipeline.stage.label) · \(pipeline.completed)/\(pipeline.target)")
                             .font(.caption.weight(.medium))
                             .foregroundStyle(theme.accent)
                         Spacer()
@@ -353,6 +436,30 @@ struct WritingEditorView: View {
                     .background(RoundedRectangle(cornerRadius: 9).fill(theme.accent.opacity(0.1)))
                 }
                 .buttonStyle(.plain)
+            }
+
+            // 批过意见的章才出现在这个按钮里 —— 「改哪些」由用户写没写意见决定，
+            // 不是由「第几章到第几章」决定。这是它和「往后重写」的根本区别。
+            if !project.commentedIndexes.isEmpty {
+                Button {
+                    startCommentedRewrite()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "text.bubble")
+                        Text("按意见重写 \(project.commentedIndexes.count) 章")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Text("第 \(project.commentedIndexes.map { String($0 + 1) }.joined(separator: "、")) 章")
+                            .font(.caption2.monospacedDigit())
+                    }
+                    .foregroundStyle(theme.accent)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 11)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(theme.accent.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+                .disabled(pipeline.stage.isRunning)
+                .opacity(pipeline.stage.isRunning ? 0.4 : 1)
             }
 
             HStack(spacing: 8) {
@@ -455,13 +562,17 @@ struct WritingEditorView: View {
         writing.update(project)
     }
 
-    /// 重写本章：替换原位置，不动后面的章节
+    /// 重写本章：替换原位置，不动后面的章节。
+    /// 有意见就按意见改（走改稿提示词），没意见才是「保留事件、只换写法」。
     private func startRewrite(_ index: Int) {
         guard let project, project.segments.indices.contains(index) else { return }
         let segment = project.segments[index]
+        let note = commentText(segment)
         request = GenerationRequest(
-            headline: "重写第 \(index + 1) 章",
-            detail: "保留已发生的事，只换写法 · \(AISettings.shared.model)",
+            headline: note.isEmpty ? "重写第 \(index + 1) 章" : "按意见改第 \(index + 1) 章",
+            detail: note.isEmpty
+                ? "保留已发生的事，只换写法 · \(AISettings.shared.model)"
+                : WritingPipeline.oneLine(note, 30),
             messages: WritingPrompts.rewriteChapterAt(
                 project: project,
                 index: index,
@@ -471,11 +582,36 @@ struct WritingEditorView: View {
                     outline: project.outlineText,
                     recaps: WritingPrompts.recapLines(project),
                     goal: segment.goal
-                )
+                ),
+                comment: note.isEmpty ? nil : note
             )
         ) { raw in
             replaceChapter(raw, at: index)
         }
+    }
+
+    /// 只改这一章：直接进流水线，好在后台有了统一的进度/日志/暂停，
+    /// 也不会像单章面板那样必须开着才继续。
+    private func rewriteOne(_ index: Int) {
+        guard AISettings.shared.isConfigured else {
+            showNoConfig = true
+            return
+        }
+        showAutoWrite = true
+        pipeline.startRewrite(projectID: projectID, indexes: [index])
+    }
+
+    /// 一次改完所有批过意见的章。这是「审阅完 → 一键落地」的入口。
+    private func startCommentedRewrite() {
+        guard let project else { return }
+        let indexes = project.commentedIndexes
+        guard !indexes.isEmpty else { return }
+        guard AISettings.shared.isConfigured else {
+            showNoConfig = true
+            return
+        }
+        showAutoWrite = true
+        pipeline.startRewrite(projectID: projectID, indexes: indexes)
     }
 
     private func replaceChapter(_ raw: String, at index: Int) {
@@ -490,6 +626,9 @@ struct WritingEditorView: View {
         segment.issues = nil
         // 正文换了，旧摘要就不能再用
         segment.recap = nil
+        // 意见已经落实；留着的话下次「按意见重写」会把它再改一遍
+        segment.comment = nil
+        segment.commentAt = nil
         project.segments[index] = segment
         writing.update(project)
     }
@@ -581,6 +720,14 @@ struct WritingEditorView: View {
         if args.contains("--open-chapter"), let first = project.segments.first {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { editingSegment = first }
         }
+        // 截图/自测：直接打开第一张卡的修改意见
+        if args.contains("--open-comment"), let first = project.segments.first {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { commentingSegment = first }
+        }
+        // 自测：不等手点，直接跑一次「按意见重写」（意见得先用 --seed-comment 或手工写）
+        if args.contains("--rewrite-comments") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Demo.step(1.2)) { startCommentedRewrite() }
+        }
         if args.contains("--open-auto") || args.contains("--auto-write") || args.contains("--open-outline") {
             // 注意别分成两个 asyncAfter：--auto-write 那条若仍用固定 0.4 秒，
             // 会把 --open-auto 排的 4 秒（录屏时）抢先覆盖掉，面板一闪就出来。
@@ -618,6 +765,7 @@ struct ChapterEditorView: View {
     @State private var loaded = false
     @State private var request: GenerationRequest?
     @State private var saveTask: Task<Void, Never>?
+    @State private var showComment = false
 
     private var theme: ReadingTheme { settings.theme }
 
@@ -657,7 +805,17 @@ struct ChapterEditorView: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(theme.accent)
             }
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                // 读的时候发现问题，就地写下来 —— 不用退出去、找到那张卡再点一遍
+                Button {
+                    flush()
+                    showComment = true
+                } label: {
+                    Label("修改意见", systemImage: hasComment ? "text.bubble.fill" : "text.bubble")
+                        .font(.subheadline)
+                }
+                .foregroundStyle(hasComment ? theme.accent : theme.secondary)
+
                 Button {
                     prepareExtension()
                 } label: {
@@ -684,8 +842,19 @@ struct ChapterEditorView: View {
             }
             .environmentObject(settings)
         }
+        .sheet(isPresented: $showComment) {
+            ChapterCommentSheet(projectID: projectID, segmentID: segmentID)
+                .environmentObject(settings)
+        }
         .onAppear(perform: load)
         .onDisappear(perform: flush)
+    }
+
+    /// 工具栏那个气泡是否点亮：写着意见是「已批过」，一眼能看出这一章的审阅状态
+    private var hasComment: Bool {
+        guard let project = WritingStore.shared.project(projectID),
+              let segment = project.segments.first(where: { $0.id == segmentID }) else { return false }
+        return !(segment.comment ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func load() {
@@ -729,6 +898,181 @@ struct ChapterEditorView: View {
             text += text.hasSuffix("\n") ? "\n" + body : "\n\n" + body
             flush()
         }
+    }
+}
+
+// MARK: - 修改意见
+
+/// 写一章的修改意见。
+///
+/// 这里写的是**给模型的指令**，不是读后感：写得越具体，改写越像手术刀；
+/// 写成「感觉不太对」，模型只能整章重来 —— 那正是用户最怕的「超出预期」。
+/// 所以这块输入框的重点是教格式（哪儿不对 + 怎么改），而不是让人自由发挥。
+struct ChapterCommentSheet: View {
+    let projectID: String
+    let segmentID: String
+
+    @EnvironmentObject private var settings: ReaderSettings
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var writing = WritingStore.shared
+
+    @State private var text = ""
+    @State private var loaded = false
+    @FocusState private var focused: Bool
+
+    private var theme: ReadingTheme { settings.theme }
+
+    private var project: WritingProject? { writing.project(projectID) }
+
+    private var segment: WritingSegment? {
+        project?.segments.first { $0.id == segmentID }
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                if let segment {
+                    header(segment)
+                }
+                editor
+                footer
+            }
+            .background(theme.background.ignoresSafeArea())
+            .navigationTitle("修改意见")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(theme.background, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(theme.colorScheme, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("取消") { dismiss() }
+                        .foregroundStyle(theme.secondary)
+                }
+            }
+        }
+        .onAppear(perform: load)
+    }
+
+    private func header(_ segment: WritingSegment) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(segment.title.isEmpty ? "未命名章节" : segment.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(theme.foreground)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Text("\(segment.wordCount) 字")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(theme.secondary)
+            }
+            if let issues = segment.issues, !issues.isEmpty {
+                // 机器审出来的问题摆在这儿，是给用户当参考的：
+                // 认不认同由人定，认就自己写进意见，不认就别让它影响改写
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("审查标记的问题（参考，不会自动改）")
+                        .font(.caption2)
+                        .foregroundStyle(.orange.opacity(0.9))
+                    ForEach(Array(issues.prefix(3).enumerated()), id: \.offset) { _, issue in
+                        Text("· \(issue)")
+                            .font(.caption2)
+                            .foregroundStyle(theme.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(9)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.08)))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
+    }
+
+    private var editor: some View {
+        ZStack(alignment: .topLeading) {
+            TextEditor(text: $text)
+                .focused($focused)
+                .font(.system(size: 15))
+                .lineSpacing(5)
+                .scrollContentBackground(.hidden)
+                .padding(10)
+            if text.isEmpty {
+                Text("写到「哪儿不对、要怎么改」。越具体，改得越准。\n\n比如：\n· 开场太慢，直接从她推门进来写，前两段删掉\n· 第三段那句「随便吧」不像他会说的话，改成沉默\n· 结尾别让她答应，停在门口就行")
+                    .font(.system(size: 14))
+                    .foregroundStyle(theme.secondary.opacity(0.7))
+                    .lineSpacing(5)
+                    .padding(.horizontal, 15)
+                    .padding(.vertical, 18)
+                    .allowsHitTesting(false)
+            }
+        }
+        .background(theme.foreground.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 16)
+    }
+
+    private var footer: some View {
+        VStack(spacing: 8) {
+            Text("意见只对本章生效。全部章节看过一遍，再回列表点「按意见重写 N 章」，一次改完，中间不用守着。")
+                .font(.caption2)
+                .foregroundStyle(theme.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 10) {
+                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button {
+                        text = ""
+                    } label: {
+                        Text("清除")
+                            .font(.subheadline)
+                            .foregroundStyle(theme.secondary)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 12)
+                            .background(RoundedRectangle(cornerRadius: 12).fill(theme.foreground.opacity(0.06)))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Button {
+                    save()
+                    dismiss()
+                } label: {
+                    Text("保存意见")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(theme.background)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(theme.accent))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(16)
+    }
+
+    private func load() {
+        guard !loaded else { return }
+        loaded = true
+        text = segment?.comment ?? ""
+        focused = text.isEmpty
+    }
+
+    private func save() {
+        guard var project = writing.project(projectID),
+              let index = project.segments.firstIndex(where: { $0.id == segmentID }) else { return }
+        let note = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if note.isEmpty {
+            // 清空 = 撤销这条意见，不能只把空字符串存进去，
+            // 否则 `commentedIndexes` 还得再判一次空
+            project.segments[index].comment = nil
+            project.segments[index].commentAt = nil
+        } else {
+            project.segments[index].comment = note
+            project.segments[index].commentAt = Date()
+        }
+        writing.update(project)
     }
 }
 
