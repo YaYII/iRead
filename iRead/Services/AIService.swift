@@ -74,40 +74,60 @@ struct AIProvider: Identifiable, Hashable {
 
 /// API Key 走 Keychain，不进 UserDefaults：
 /// 它比其他阅读设置敏感得多，不该跟着偏好设置一起被备份、导出。
+///
+/// **按服务商分开存**：一个人手上常有「DeepSeek 一个 Key、OpenCode Go 一个 Key」，
+/// 只留一个槽位的话每次切服务商都要重新粘贴，粘错还很难看出来。
 enum AIKeychain {
     private static let service = "com.yingyang.iread.ai"
-    private static let account = "api-key"
+    /// 老版本的单一槽位，读的时候当兜底，避免升级后 Key 突然没了
+    private static let legacyAccount = "api-key"
 
-    static var value: String {
-        get {
-            var query = baseQuery
-            query[kSecReturnData as String] = true
-            query[kSecMatchLimit as String] = kSecMatchLimitOne
-            var item: CFTypeRef?
-            guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-                  let data = item as? Data,
-                  let text = String(data: data, encoding: .utf8) else { return "" }
-            return text
+    static func value(for providerID: String) -> String {
+        read(account: "api-key.\(providerID)")
+    }
+
+    static func set(_ key: String, for providerID: String) {
+        write(key, account: "api-key.\(providerID)")
+    }
+
+    /// 老版本只有一个槽位。升级时把它搬给「当时选中的服务商」，搬完就清掉。
+    ///
+    /// 注意别做成「谁读不到自己的就去读老槽位」的兜底 —— 那样 A 家的 Key 会被发给 B 家。
+    /// 实测：把 OpenCode 的 Key 发给 api.deepseek.com，回 401，看着像 Key 失效，
+    /// 实际上是把自己的 Key 交给了另一个厂商。
+    static var legacy: String { read(account: legacyAccount) }
+
+    static func clearLegacy() { write("", account: legacyAccount) }
+
+    private static func read(account: String) -> String {
+        var query = baseQuery(account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data,
+              let text = String(data: data, encoding: .utf8) else { return "" }
+        return text
+    }
+
+    private static func write(_ key: String, account: String) {
+        let data = Data(key.utf8)
+        if key.isEmpty {
+            SecItemDelete(baseQuery(account: account) as CFDictionary)
+            return
         }
-        set {
-            let data = Data(newValue.utf8)
-            if newValue.isEmpty {
-                SecItemDelete(baseQuery as CFDictionary)
-                return
-            }
-            let updated = SecItemUpdate(
-                baseQuery as CFDictionary,
-                [kSecValueData as String: data] as CFDictionary
-            )
-            if updated == errSecItemNotFound {
-                var add = baseQuery
-                add[kSecValueData as String] = data
-                SecItemAdd(add as CFDictionary, nil)
-            }
+        let updated = SecItemUpdate(
+            baseQuery(account: account) as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary
+        )
+        if updated == errSecItemNotFound {
+            var add = baseQuery(account: account)
+            add[kSecValueData as String] = data
+            SecItemAdd(add as CFDictionary, nil)
         }
     }
 
-    private static var baseQuery: [String: Any] {
+    private static func baseQuery(account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -154,11 +174,21 @@ final class AISettings: ObservableObject {
         let d = UserDefaults.standard
         let savedID = d.string(forKey: Key.provider)
         let saved = AIProvider.all.first { $0.id == savedID }
-        providerID = savedID ?? "deepseek"
+        let initialID = savedID ?? "deepseek"
+        providerID = initialID
         baseURL = d.string(forKey: Key.baseURL) ?? (saved ?? AIProvider.all[0]).baseURL
         model = d.string(forKey: Key.model) ?? (saved ?? AIProvider.all[0]).model
         temperature = d.object(forKey: Key.temperature) as? Double ?? 0.85
-        apiKey = AIKeychain.value
+        // 每家的 Key 分开存，切换服务商时下面 apply() 会重新读。
+        // 老版本的单一槽位在这里一次性搬到当前服务商名下，搬完删掉。
+        let legacy = AIKeychain.legacy
+        if !legacy.isEmpty {
+            if AIKeychain.value(for: initialID).isEmpty {
+                AIKeychain.set(legacy, for: initialID)
+            }
+            AIKeychain.clearLegacy()
+        }
+        apiKey = AIKeychain.value(for: initialID)
 
         if let existing = d.string(forKey: Key.session), !existing.isEmpty {
             sessionID = existing
@@ -191,7 +221,7 @@ final class AISettings: ObservableObject {
     func setAPIKey(_ key: String) {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         apiKey = trimmed
-        AIKeychain.value = trimmed
+        AIKeychain.set(trimmed, for: providerID)
     }
 
     func apply(_ provider: AIProvider) {
@@ -200,6 +230,9 @@ final class AISettings: ObservableObject {
             baseURL = provider.baseURL
             model = provider.model
         }
+        // 换了一家就把那家的 Key 换上来：DeepSeek 和 OpenCode Go 用的是两个 Key，
+        // 只留一个槽位时用户每次切换都得重粘
+        apiKey = AIKeychain.value(for: provider.id)
     }
 }
 

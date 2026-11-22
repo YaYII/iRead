@@ -167,6 +167,8 @@
 
 设置 → AI 写作。预设 DeepSeek / 通义千问 / Moonshot / OpenAI / 本地 Ollama / **OpenCode Go 套餐**，也可以选「自定义」手填 —— 地址填到 `/v1` 为止，路径由 App 补。旁边有「测试连接」，点一下发一句「你好」看通不通。
 
+**Key 按服务商分开存**（Keychain 里一家一个 account）。手上同时有 DeepSeek 和 OpenCode Go 的话，切过去就是那家的 Key，不用重粘；老版本留下的单一 Key 会在升级时搬到当时选中的那家名下。**不做「读不到就去读老槽位」的兜底** —— 实测那样会把 OpenCode 的 Key 发给 DeepSeek，回 401，看着像 Key 失效，实际上是把自己的 Key 交给了另一家。
+
 **OpenCode Go 套餐**（用自己已有的 Go 订阅，不必再买 DeepSeek 的额度）有两个必踩的坑，都已在代码里处理：
 
 - 地址必须是 `https://opencode.ai/zen/go/v1`。写成 `/zen/v1` 扣的是 **Zen 余额**，Go 套餐额度一分不动，余额为 0 时直接回 `402 Insufficient account funds` —— 看着像「Key 失效」，其实是端点错了。所以 402 的错误文案专门指向这一条
