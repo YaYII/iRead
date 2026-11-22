@@ -43,8 +43,15 @@ final class ComicDownloadManager: ObservableObject {
     private var pending: [String] = []
     /// 当前正在下的那本；nil 表示队列空闲
     private var runningID: String?
-    /// 排队期间要用的参数：下哪几话、从哪个源下
-    private var jobs: [String: (chapters: [Int], source: NovelSource)] = [:]
+    /// 排队期间要用的参数：下哪几话、从哪个源下。
+    /// `id` 用来区分「同一本书的不同轮次」—— 用户点「停止」后马上又点「缓存全部」时，
+    /// 上一轮的 `run` 可能还没退出，收尾时不能把新一轮的登记和状态一起抹掉。
+    struct Job {
+        let id = UUID()
+        let chapters: [Int]
+        let source: NovelSource
+    }
+    private var jobs: [String: Job] = [:]
     /// 单张图下载并发：站点普遍扛不住高并发，3 是比较稳的折中
     private let imageConcurrency = 3
 
@@ -63,7 +70,7 @@ final class ComicDownloadManager: ObservableObject {
             task.status = .fetching
             tasks[next] = task
             runners[next] = Swift.Task { [weak self] in
-                await self?.run(bookID: next, chapters: job.chapters, source: job.source)
+                await self?.run(bookID: next, job: job)
             }
             return
         }
@@ -100,7 +107,7 @@ final class ComicDownloadManager: ObservableObject {
             total: targets.count,
             status: .queued
         )
-        jobs[book.id] = (targets, source)
+        jobs[book.id] = Job(chapters: targets, source: source)
         if !pending.contains(book.id) { pending.append(book.id) }
         pump()
     }
@@ -131,16 +138,20 @@ final class ComicDownloadManager: ObservableObject {
 
     // MARK: - 执行
 
-    private func run(bookID: String, chapters: [Int], source: NovelSource) async {
+    private func run(bookID: String, job: Job) async {
         // 不管从哪条路径退出（下完 / 取消 / 任务已被清掉），都要释放槽位并接下一本
         defer {
+            // 用户可能已经「停止 → 重新缓存」：jobs 里换成新一轮的登记了，别抹掉，
+            // 也不要把 runningID 的归属搞乱（pump 会接着跑新一轮）
+            if jobs[bookID]?.id == job.id { jobs[bookID] = nil }
             runners[bookID] = nil
             if runningID == bookID { runningID = nil }
-            jobs[bookID] = nil
             pump()
             scheduleCleanup(bookID)
         }
 
+        let chapters = job.chapters
+        let source = job.source
         var completed = 0
         var failed = 0
 
@@ -148,22 +159,27 @@ final class ComicDownloadManager: ObservableObject {
             if Swift.Task.isCancelled { break }
             guard let meta = LibraryStore.shared.comicMeta(for: bookID),
                   let chapter = meta.chapters.first(where: { $0.index == index }) else { continue }
+            // 这一轮已经被新一轮取代：立刻收手，别把新一轮的状态写成自己的
+            if jobs[bookID]?.id != job.id { break }
             tasks[bookID]?.status = .fetching
             tasks[bookID]?.currentChapter = chapter.shortTitle
 
             do {
                 try await downloadChapter(bookID: bookID, chapter: chapter, source: source)
                 completed += 1
-                tasks[bookID]?.completed = completed
+                if jobs[bookID]?.id == job.id { tasks[bookID]?.completed = completed }
             } catch {
                 if Swift.Task.isCancelled { break }
                 failed += 1
-                tasks[bookID]?.failed = failed
+                if jobs[bookID]?.id == job.id { tasks[bookID]?.failed = failed }
                 NSLog("[Comic] 第 %d 话下载失败：%@", index, error.localizedDescription)
             }
         }
 
-        // tasks[bookID] 可能已被 cancel / forget 处理过，读到就按当前状态收尾
+        // 不是「当前这一轮」就不要再改状态：cancel 已经写好 .cancelled，
+        // 新一轮也已经把自己的任务登记进 tasks
+        guard jobs[bookID]?.id == job.id else { return }
+        // tasks[bookID] 可能已被 forget 清掉
         guard var task = tasks[bookID] else { return }
         task.currentChapter = nil
         if Swift.Task.isCancelled {
