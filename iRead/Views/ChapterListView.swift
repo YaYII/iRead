@@ -135,6 +135,31 @@ struct ChapterListView: View {
     // MARK: - 章节列表
 
     private var chapterList: some View {
+        // 目录默认要停在「正在读的这一章」，而不是从头列起 ——
+        // 几百章的书从第 1 章翻到第 300 章并不现实。
+        ScrollViewReader { proxy in
+            listBody
+                .onAppear { scrollToCurrent(proxy) }
+                // 书源目录是异步回来的，合并后行数变了，得再定位一次
+                .onChange(of: remoteTitles?.count ?? 0) { _, _ in scrollToCurrent(proxy) }
+        }
+    }
+
+    /// 把当前章滚进视野。搜索时不动：那时候用户要看的是搜索结果。
+    ///
+    /// 不用 `.center`：半屏高的抽屉里居中，上下各露半行，顶部那半行还贴着搜索框，
+    /// 看起来像渲染错位。改成让当前章落在「上面留 1 章」的位置 ——
+    /// 标题允许两行，一屏只放得下四五章，留两行会把当前章挤到页脚底下。
+    private func scrollToCurrent(_ proxy: ScrollViewProxy) {
+        guard query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let target = max(0, currentIndex - 1)
+        // 等一帧让 List 先把行建出来，否则 scrollTo 找不到目标（尤其大目录）
+        DispatchQueue.main.async {
+            proxy.scrollTo(target, anchor: .top)
+        }
+    }
+
+    private var listBody: some View {
         List {
             if filteredRows.isEmpty {
                 Text("未找到匹配的章节")
@@ -168,7 +193,11 @@ struct ChapterListView: View {
                             Text(row.title)
                                 .font(.body)
                                 .foregroundStyle(rowTitleColor(row))
-                                .lineLimit(1)
+                                // 最多两行：章节名往往只差结尾的「（三）」「（四）」，
+                                // 单行截断会把区分点截掉，等于没法选章
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
 
                             Spacer(minLength: 4)
 
@@ -187,6 +216,8 @@ struct ChapterListView: View {
                         .padding(.vertical, 2)
                     }
                     .buttonStyle(.plain)
+                    // scrollTo 的锚点：行本身没有 id 就定位不到
+                    .id(row.index)
                     .listRowBackground(
                         row.index == currentIndex
                             ? theme.accent.opacity(0.08)
