@@ -22,6 +22,8 @@ struct ChapterListView: View {
     /// 点了未下载的章时弹提示
     @State private var pendingIndex: Int?
     @State private var showUndownloadedAlert = false
+    /// 搜索框焦点：点列表或空白就收键盘，不用去够键盘上的「完成」
+    @FocusState private var searchFocused: Bool
 
     private var theme: ReadingTheme { settings.theme }
 
@@ -80,11 +82,18 @@ struct ChapterListView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+                .simultaneousGesture(dismissOnTap)
             searchBar
             chapterList
+                .simultaneousGesture(dismissOnTap)
             footer
         }
         .background(theme.background.ignoresSafeArea())
+    }
+
+    /// 点空白处收键盘。`onTapGesture` 会把章节行的点击吃掉，所以用 simultaneous。
+    private var dismissOnTap: some Gesture {
+        TapGesture().onEnded { searchFocused = false }
     }
 
     // MARK: - 头部
@@ -112,6 +121,7 @@ struct ChapterListView: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(theme.secondary)
             TextField("搜索章节标题", text: $query)
+                .focused($searchFocused)
                 .foregroundStyle(theme.foreground)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
@@ -139,6 +149,8 @@ struct ChapterListView: View {
         // 几百章的书从第 1 章翻到第 300 章并不现实。
         ScrollViewReader { proxy in
             listBody
+                // 目录一划就收键盘，不然半屏都被键盘占着
+                .scrollDismissesKeyboard(.immediately)
                 .onAppear { scrollToCurrent(proxy) }
                 // 书源目录是异步回来的，合并后行数变了，得再定位一次
                 .onChange(of: remoteTitles?.count ?? 0) { _, _ in scrollToCurrent(proxy) }

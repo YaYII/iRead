@@ -1,5 +1,17 @@
 import Foundation
 
+// MARK: - 字数
+
+/// 字数只在这里数。
+///
+/// 为什么不用 `text.count`：那会把换行、缩进、段间空行都算成字，
+/// 而读者和平台数的是正文内容。去掉空白后的字符数（含标点）才对得上。
+enum WritingText {
+    static func count(_ text: String) -> Int {
+        text.reduce(0) { $1.isWhitespace ? $0 : $0 + 1 }
+    }
+}
+
 // MARK: - 创作方式
 
 /// 这一本是怎么起头的。决定 AI 拿到什么材料、被要求做什么。
@@ -59,7 +71,12 @@ struct WritingSegment: Identifiable, Codable, Hashable {
     /// 最近一次审查没过、但用户选择保留时留下的问题
     var issues: [String]? = nil
 
-    var wordCount: Int { text.count }
+    /// 字数一律由程序数，不问模型。
+    ///
+    /// 口径统一在 `WritingText.count`：去掉空白后的字符数（含标点）。
+    /// UI 上的「2363 字」、日志里的字数、发给审查 AI 的那个数字，必须是同一个 ——
+    /// 否则卡片说 2363、审查说「只有 1900 字」，用户没法判断谁对。
+    var wordCount: Int { WritingText.count(text) }
 
     /// 卡片上显示的三行预览
     var preview: String {

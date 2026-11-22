@@ -247,7 +247,7 @@ struct WritingEditorView: View {
                         .font(.system(size: 11))
                     Text(project.outlineText.isEmpty
                          ? "还没有故事大纲 —— 长篇建议先写一份"
-                         : "故事大纲 · \(project.outlineText.count) 字")
+                         : "故事大纲 · \(WritingText.count(project.outlineText)) 字")
                         .font(.caption)
                     Spacer()
                     if let plan = project.plan, !plan.isEmpty {
@@ -867,7 +867,7 @@ struct GenerationSheet: View {
                             .background(RoundedRectangle(cornerRadius: 11).fill(theme.foreground.opacity(0.06)))
                     }
                     .buttonStyle(.plain)
-                    Text("已 \(text.count) 字")
+                    Text("已 \(WritingText.count(text)) 字")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(theme.secondary)
                         .frame(width: 68)

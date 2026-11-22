@@ -63,6 +63,9 @@ final class WritingPipeline: ObservableObject {
     @Published private(set) var activePlan: [String] = []
 
     private var task: Task<Void, Never>?
+    /// 程序判定的字数下限。提示词要 2200–3000 字，这里留一点余量：
+    /// 低于 2000 基本就是没写完，直接重写比送去审更划算。
+    private static let minWords = 2000
     /// 点了「暂停」：本章写完就停，不打断正在生成的内容
     private var pauseRequested = false
     /// 三次仍不过审时：停下等人看（默认），还是记个草稿接着往下写
@@ -245,9 +248,10 @@ final class WritingPipeline: ObservableObject {
         for attempt in 0...2 {
             try Task.checkCancellation()
 
-            // 字数不达标不值得再花一次审查调用
-            if parsed.body.count < 1200 {
-                issues = ["这一章只有 \(parsed.body.count) 字，篇幅明显不足（要求 2200–3000 字）"]
+            // 字数由程序数（不是让模型估），不达标不值得再花一次审查调用
+            let words = WritingText.count(parsed.body)
+            if words < Self.minWords {
+                issues = ["本章 \(words) 字，少于 \(Self.minWords) 字的下限（目标 2200–3000 字）"]
                 passed = false
             } else {
                 stage = .reviewing(number)
@@ -256,6 +260,7 @@ final class WritingPipeline: ObservableObject {
                         project: project,
                         chapterTitle: parsed.title,
                         chapterText: parsed.body,
+                        wordCount: words,
                         goal: goal,
                         recent: recent
                     ),
@@ -284,6 +289,8 @@ final class WritingPipeline: ObservableObject {
 
         try Task.checkCancellation()
 
+        // 落盘前再数一次：改成局部修以后正文变了，用最终这一版
+        let finalWords = WritingText.count(parsed.body)
         var segment = WritingSegment(title: parsed.title, text: parsed.body, generated: true)
         segment.goal = goal
         segment.recap = recap.isEmpty ? nil : recap
@@ -304,10 +311,10 @@ final class WritingPipeline: ObservableObject {
 
         if passed {
             // 标题里通常已经带「第N章」，日志不要再加一次，否则会「第1章 第1章 ……」
-            add(.ok, "\(parsed.title) · \(parsed.body.count) 字 · 通过审查")
+            add(.ok, "\(parsed.title) · \(finalWords) 字 · 通过审查")
             return true
         } else {
-            add(.error, "\(parsed.title) · \(parsed.body.count) 字 · 审查未过，已存为草稿")
+            add(.error, "\(parsed.title) · \(finalWords) 字 · 审查未过，已存为草稿")
             flagged.append(parsed.title)
             if continueOnFail {
                 // 草稿已经在书里了，事件算发生过；接着写下去，最后统一列出哪几章要回头看。

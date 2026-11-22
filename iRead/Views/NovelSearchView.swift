@@ -34,6 +34,8 @@ struct NovelSearchView: View {
     @State private var sortMode: SortMode = .source
     /// 「章节最多」需要先把整批结果的章节数查完（列表本身是滚到哪查到哪）
     @State private var statsLoadTask: Task<Void, Never>?
+    /// 搜索框焦点。点页面其它地方就收键盘 —— 不然只能去够键盘右下角那颗「搜索」
+    @FocusState private var searchFocused: Bool
     /// 章节数查询限流：同时最多 4 个，避免把书源打爆
     private static let statsGate = StatsGate(limit: 4)
 
@@ -59,12 +61,16 @@ struct NovelSearchView: View {
                 // 结果一多就没地方看了。声明在设置页、书籍详情页都还在，这里留个 ⓘ 随时可查。
                 if hasSearched {
                     compactHeader
+                        .simultaneousGesture(dismissOnTap)
                 } else {
                     header
+                        .simultaneousGesture(dismissOnTap)
                     disclaimer
+                        .simultaneousGesture(dismissOnTap)
                 }
                 searchBar
                 content
+                    .simultaneousGesture(dismissOnTap)
             }
             .animation(.easeInOut(duration: 0.22), value: hasSearched)
         }
@@ -108,6 +114,12 @@ struct NovelSearchView: View {
     }
 
     // MARK: - 顶部
+
+    /// 点空白处收键盘。用 `simultaneousGesture` 而不是 `onTapGesture`：
+    /// 后者会把条目、按钮自己的点击吃掉。
+    private var dismissOnTap: some Gesture {
+        TapGesture().onEnded { searchFocused = false }
+    }
 
     private var header: some View {
         HStack(alignment: .center) {
@@ -203,6 +215,7 @@ struct NovelSearchView: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(settings.theme.secondary)
             TextField("搜索书名或作者", text: $keyword)
+                .focused($searchFocused)
                 .foregroundStyle(settings.theme.foreground)
                 .tint(settings.theme.accent)
                 .autocorrectionDisabled()
@@ -265,6 +278,8 @@ struct NovelSearchView: View {
                     .padding(.horizontal, 20)
                     .padding(.bottom, 32)
                 }
+                // 手指一划就收，不用专门去点键盘上的搜索
+                .scrollDismissesKeyboard(.immediately)
             }
         } else if isSearching {
             VStack(spacing: 12) {
@@ -719,6 +734,8 @@ struct NovelSearchView: View {
     }
 
     private func performSearch() {
+        // 搜索一开始就收键盘：结果要铺满屏幕，键盘留着只是挡视线
+        searchFocused = false
         let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             hasSearched = false

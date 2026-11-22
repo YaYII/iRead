@@ -355,6 +355,8 @@ enum WritingPrompts {
       c) 与【最近正文】的情节明显重复，或把上一章已经发生的事又写了一遍；
       d) 正文里有元信息（「以下是」「本章完」「约 2000 字」）、提纲式流水账、作者旁白；
       e) 整章没有完成【本章目标】里要求的事。
+    - **篇幅不归你管**：字数由程序统计，写在【本章统计】里。不要自己数、不要估算字数，
+      也不要因为「读起来觉得短」判 false —— 篇幅合不合规由程序负责。
     - 文笔偏好（够不够美、节奏快慢）不算硬伤，不要因此判 false。
     - issues 最多 3 条，每条一句话，必须指出具体的人名/事件，不要写「建议加强冲突」这类空话。
     - 没有问题就返回空数组。
@@ -365,11 +367,19 @@ enum WritingPrompts {
         project: WritingProject,
         chapterTitle: String,
         chapterText: String,
+        wordCount: Int,
         goal: String?,
         recent: String
     ) -> [AIMessage] {
         var user = """
         【书名】《\(project.title)》
+
+        """
+        // 统计值由程序算好喂进来，模型只负责内容判断。
+        // 以前不给这个数字，模型会自己估（「这一章只有八百字」），估错了就白改一轮。
+        user += """
+        【本章统计（程序计算，以此为准）】
+        \(chapterTitle)：\(wordCount) 字（不含空白、含标点）
 
         """
         if !project.outlineText.isEmpty {

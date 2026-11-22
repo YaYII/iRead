@@ -19,6 +19,8 @@ struct ComicSearchView: View {
     @State private var showSourceManager = false
     @State private var searchTask: Task<Void, Never>?
     @State private var showImporter = false
+    /// 搜索框焦点：点别处收键盘，不用去够键盘上的「搜索」
+    @FocusState private var searchFocused: Bool
 
     private let columns = Array(
         repeating: GridItem(.flexible(), spacing: 14, alignment: .top),
@@ -31,8 +33,10 @@ struct ComicSearchView: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 header
+                    .simultaneousGesture(dismissOnTap)
                 searchBar
                 content
+                    .simultaneousGesture(dismissOnTap)
             }
         }
         .preferredColorScheme(settings.theme.colorScheme)
@@ -66,6 +70,12 @@ struct ComicSearchView: View {
     }
 
     // MARK: - 顶部
+
+    /// 点空白处收键盘。用 `simultaneousGesture` 而不是 `onTapGesture`：
+    /// 后者会把封面卡片自己的点击吃掉。
+    private var dismissOnTap: some Gesture {
+        TapGesture().onEnded { searchFocused = false }
+    }
 
     private var header: some View {
         HStack(alignment: .center, spacing: 8) {
@@ -113,6 +123,7 @@ struct ComicSearchView: View {
                 .font(.system(size: 13))
                 .foregroundStyle(settings.theme.secondary)
             TextField("搜索漫画名或作者", text: $keyword)
+                .focused($searchFocused)
                 .font(.system(size: 13))
                 .foregroundStyle(settings.theme.foreground)
                 .tint(settings.theme.accent)
@@ -170,6 +181,7 @@ struct ComicSearchView: View {
                 .padding(.top, 4)
                 .padding(.bottom, 120)
             }
+            .scrollDismissesKeyboard(.immediately)
         } else if let error = errorMessage {
             stateView(systemName: "exclamationmark.triangle", title: "搜索失败", message: error)
         } else if hasSearched {
@@ -277,6 +289,8 @@ struct ComicSearchView: View {
     // MARK: - 行为
 
     private func performSearch() {
+        // 开搜就收键盘：封面网格要占满屏幕
+        searchFocused = false
         let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             errorMessage = "请输入漫画名或作者"

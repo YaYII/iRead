@@ -113,7 +113,9 @@ struct BookshelfView: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 header
+                    .simultaneousGesture(dismissSearchOnTap)
                 shelfPicker
+                    .simultaneousGesture(dismissSearchOnTap)
                 if let message = store.lastError {
                     errorBanner(message)
                 }
@@ -132,6 +134,9 @@ struct BookshelfView: View {
                         listContent
                     }
                 }
+                // 滑动或点空白都收键盘：搜索框在顶部，键盘一挡就是半屏书
+                .scrollDismissesKeyboard(.immediately)
+                .simultaneousGesture(dismissSearchOnTap)
             }
         }
         .preferredColorScheme(settings.theme.colorScheme)
@@ -208,6 +213,11 @@ struct BookshelfView: View {
     // MARK: - 顶部区域
 
     /// 紧凑标题行：书名标题 + 数量 + 视图切换 + 导入，一行说完。
+    /// 点书架空白处收键盘。用 `simultaneousGesture`：`onTapGesture` 会把书的点击吃掉。
+    private var dismissSearchOnTap: some Gesture {
+        TapGesture().onEnded { searchFocused = false }
+    }
+
     private var header: some View {
         HStack(alignment: .center, spacing: 8) {
             Text("书架")
