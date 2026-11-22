@@ -25,12 +25,108 @@ struct WritingEditorView: View {
     @State private var showRename = false
     @State private var renameText = ""
     @State private var showNoConfig = false
+    @State private var showAutoWrite = false
+    @State private var showOutline = false
+    /// 待确认「从第 N 章往后重写」的下标
+    @State private var pendingRewrite: Int?
+
+    @ObservedObject private var pipeline = WritingPipeline.shared
 
     private var theme: ReadingTheme { settings.theme }
 
     private var project: WritingProject? { writing.project(projectID) }
 
     var body: some View {
+        // 拆成两段：一条链上堆五个 sheet + 三个 alert + 确认框，
+        // 类型检查会直接超时（"unable to type-check this expression in reasonable time"）。
+        sheetHost
+            .alert("重命名", isPresented: $showRename) {
+                TextField("书名", text: $renameText)
+                Button("保存") {
+                    guard var project else { return }
+                    let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    project.title = name.isEmpty ? "未命名作品" : name
+                    writing.update(project)
+                }
+                Button("取消", role: .cancel) {}
+            }
+            .alert("还没配置 AI 服务", isPresented: $showNoConfig) {
+                Button("知道了", role: .cancel) {}
+            } message: {
+                Text("到「设置 → AI 写作」选一个服务商、填上 API Key，再回来写。本地模型不需要 Key。")
+            }
+            .alert("删除《\(project?.title ?? "")》？", isPresented: $showDeleteConfirm) {
+                Button("删除", role: .destructive) {
+                    writing.delete(projectID)
+                    dismiss()
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("稿件会从本机删掉，导出过的 txt 不受影响。")
+            }
+            .onAppear { autoGenerateIfAsked() }
+    }
+
+    private var sheetHost: some View {
+        panel
+            .sheet(item: $editingSegment) { segment in
+                NavigationStack {
+                    ChapterEditorView(projectID: projectID, segmentID: segment.id)
+                        .environmentObject(settings)
+                }
+            }
+            .sheet(item: $request) { item in
+                GenerationSheet(
+                    headline: item.headline,
+                    detail: item.detail,
+                    messages: item.messages
+                ) { raw in
+                    // 由请求自己决定落到哪儿：新写一章、还是替换某一章
+                    item.onSave(raw)
+                }
+                .environmentObject(settings)
+            }
+            .sheet(isPresented: $showAutoWrite) {
+                AutoWriteSheet(projectID: projectID)
+                    .environmentObject(settings)
+            }
+            .sheet(isPresented: $showOutline) {
+                OutlineSheet(projectID: projectID)
+                    .environmentObject(settings)
+                    .environmentObject(store)
+            }
+            .sheet(item: Binding(
+                get: { exportURL.map { ExportFile(url: $0) } },
+                set: { if $0 == nil { exportURL = nil } }
+            )) { file in
+                ExportShareSheet(items: [file.url])
+            }
+            .confirmationDialog(
+                rewriteTitle,
+                isPresented: rewritePresented,
+                titleVisibility: .visible
+            ) {
+                Button("重写这 \(rewriteCount(from: pendingRewrite ?? 0)) 章", role: .destructive) {
+                    if let index = pendingRewrite { rewriteFrom(index) }
+                }
+                Button("取消", role: .cancel) { pendingRewrite = nil }
+            } message: {
+                Text("这一章和它后面的章节会被删掉重新写，删了不能恢复。想留底的话先导出 TXT。")
+            }
+    }
+
+    private var rewriteTitle: String {
+        "从第 \((pendingRewrite ?? 0) + 1) 章往后重写？"
+    }
+
+    private var rewritePresented: Binding<Bool> {
+        Binding(
+            get: { pendingRewrite != nil },
+            set: { if !$0 { pendingRewrite = nil } }
+        )
+    }
+
+    private var panel: some View {
         Group {
             if let project {
                 content(project)
@@ -72,53 +168,6 @@ struct WritingEditorView: View {
                 }
             }
         }
-        .sheet(item: $editingSegment) { segment in
-            NavigationStack {
-                ChapterEditorView(projectID: projectID, segmentID: segment.id)
-                    .environmentObject(settings)
-            }
-        }
-        .sheet(item: $request) { item in
-            GenerationSheet(
-                headline: item.headline,
-                detail: item.detail,
-                messages: item.messages
-            ) { raw in
-                appendChapter(raw)
-            }
-            .environmentObject(settings)
-        }
-        .sheet(item: Binding(
-            get: { exportURL.map { ExportFile(url: $0) } },
-            set: { if $0 == nil { exportURL = nil } }
-        )) { file in
-            ExportShareSheet(items: [file.url])
-        }
-        .alert("重命名", isPresented: $showRename) {
-            TextField("书名", text: $renameText)
-            Button("保存") {
-                guard var project else { return }
-                let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
-                project.title = name.isEmpty ? "未命名作品" : name
-                writing.update(project)
-            }
-            Button("取消", role: .cancel) {}
-        }
-        .alert("还没配置 AI 服务", isPresented: $showNoConfig) {
-            Button("知道了", role: .cancel) {}
-        } message: {
-            Text("到「设置 → AI 写作」选一个服务商、填上 API Key，再回来写。本地模型不需要 Key。")
-        }
-        .alert("删除《\(project?.title ?? "")》？", isPresented: $showDeleteConfirm) {
-            Button("删除", role: .destructive) {
-                writing.delete(projectID)
-                dismiss()
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("稿件会从本机删掉，导出过的 txt 不受影响。")
-        }
-        .onAppear { autoGenerateIfAsked() }
     }
 
     // MARK: - 主体
@@ -138,6 +187,17 @@ struct WritingEditorView: View {
                         }
                         .buttonStyle(.plain)
                         .contextMenu {
+                            Button {
+                                startRewrite(index)
+                            } label: {
+                                Label("重写本章", systemImage: "arrow.clockwise")
+                            }
+                            Button {
+                                pendingRewrite = index
+                            } label: {
+                                Label("从这一章往后重写", systemImage: "arrow.triangle.branch")
+                            }
+                            Divider()
                             Button(role: .destructive) {
                                 deleteSegment(segment)
                             } label: {
@@ -178,6 +238,30 @@ struct WritingEditorView: View {
                     .font(.caption2)
                     .foregroundStyle(theme.secondary.opacity(0.9))
             }
+            Divider().overlay(theme.secondary.opacity(0.15))
+            Button {
+                showOutline = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "list.bullet.rectangle.portrait")
+                        .font(.system(size: 11))
+                    Text(project.outlineText.isEmpty
+                         ? "还没有故事大纲 —— 长篇建议先写一份"
+                         : "故事大纲 · \(project.outlineText.count) 字")
+                        .font(.caption)
+                    Spacer()
+                    if let plan = project.plan, !plan.isEmpty {
+                        Text("章纲还剩 \(plan.count) 条")
+                            .font(.caption2)
+                            .foregroundStyle(theme.secondary)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .semibold))
+                }
+                .foregroundStyle(project.outlineText.isEmpty ? theme.secondary : theme.accent)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -215,10 +299,21 @@ struct WritingEditorView: View {
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(theme.accent)
                 }
+                if segment.issues?.isEmpty == false {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.orange)
+                }
                 Spacer(minLength: 0)
                 Text("\(segment.wordCount) 字")
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(theme.secondary)
+            }
+            if let issues = segment.issues, !issues.isEmpty {
+                Text("审查未过：\(issues.first ?? "")")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
             }
             Text(segment.preview)
                 .font(.custom("Songti SC", size: 14))
@@ -239,22 +334,61 @@ struct WritingEditorView: View {
 
     private func bottomBar(_ project: WritingProject) -> some View {
         VStack(spacing: 6) {
-            Button {
-                startGeneration(project)
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "sparkles")
-                    Text(project.segments.isEmpty ? "让 AI 写第一章" : "让 AI 写第 \(project.segments.count + 1) 章")
+            if pipeline.projectID == projectID, pipeline.stage.isRunning {
+                Button {
+                    showAutoWrite = true
+                } label: {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini)
+                        Text("连写中 · \(pipeline.stage.label) · \(pipeline.completed)/\(pipeline.target)")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(theme.accent)
+                        Spacer()
+                        Text("查看")
+                            .font(.caption2)
+                            .foregroundStyle(theme.secondary)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 9).fill(theme.accent.opacity(0.1)))
                 }
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(theme.background)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 13)
-                .background(RoundedRectangle(cornerRadius: 12).fill(theme.accent))
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
-            Text("会把最近 \(recentChapterCount(project)) 章（约 \(recentCharacterCount(project)) 字）发给 \(AISettings.shared.providerName)")
+            HStack(spacing: 8) {
+                Button {
+                    startGeneration(project)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "sparkles")
+                        Text(project.segments.isEmpty ? "让 AI 写第一章" : "让 AI 写第 \(project.segments.count + 1) 章")
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(theme.background)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 13)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(theme.accent))
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    showAutoWrite = true
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: "list.bullet.rectangle.portrait")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("连写")
+                            .font(.caption2.weight(.medium))
+                    }
+                    .foregroundStyle(theme.accent)
+                    .frame(width: 62)
+                    .padding(.vertical, 9)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(theme.accent.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+            }
+
+            Text("单章会把最近 \(recentChapterCount(project)) 章（约 \(recentCharacterCount(project)) 字）发给 \(AISettings.shared.providerName)")
                 .font(.caption2)
                 .foregroundStyle(theme.secondary)
         }
@@ -288,8 +422,17 @@ struct WritingEditorView: View {
             let number = project.segments.count + 1
             request = GenerationRequest(
                 headline: "正在写第 \(number) 章",
-                detail: "接着前 \(recentChapterCount(project)) 章的结尾往下写 · \(AISettings.shared.model)",
-                messages: WritingPrompts.nextChapter(project: project, recent: recentText(project))
+                detail: project.nextGoal.map { "本章目标：\($0)" }
+                    ?? "接着前 \(recentChapterCount(project)) 章的结尾往下写",
+                messages: WritingPrompts.nextChapter(
+                    project: project,
+                    context: WritingPrompts.Context(
+                        outline: project.outlineText,
+                        recaps: WritingPrompts.recapLines(project),
+                        recent: recentText(project),
+                        goal: project.nextGoal
+                    )
+                )
             ) { raw in
                 appendChapter(raw)
             }
@@ -299,11 +442,78 @@ struct WritingEditorView: View {
     private func appendChapter(_ raw: String) {
         guard var project = writing.project(projectID) else { return }
         let number = project.segments.count + 1
+        let goal = project.nextGoal
         let parsed = WritingPrompts.splitChapter(raw, fallbackTitle: "第\(number)章")
-        project.segments.append(
-            WritingSegment(title: parsed.title, text: parsed.body, generated: true)
-        )
+        var segment = WritingSegment(title: parsed.title, text: parsed.body, generated: true)
+        segment.goal = goal
+        project.segments.append(segment)
+        // 用掉一条章纲，下一章接着用下一条
+        if var plan = project.plan, !plan.isEmpty {
+            plan.removeFirst()
+            project.plan = plan.isEmpty ? nil : plan
+        }
         writing.update(project)
+    }
+
+    /// 重写本章：替换原位置，不动后面的章节
+    private func startRewrite(_ index: Int) {
+        guard let project, project.segments.indices.contains(index) else { return }
+        let segment = project.segments[index]
+        request = GenerationRequest(
+            headline: "重写第 \(index + 1) 章",
+            detail: "保留已发生的事，只换写法 · \(AISettings.shared.model)",
+            messages: WritingPrompts.rewriteChapterAt(
+                project: project,
+                index: index,
+                segment: segment,
+                previousTail: index > 0 ? project.segments[index - 1].text : "",
+                context: WritingPrompts.Context(
+                    outline: project.outlineText,
+                    recaps: WritingPrompts.recapLines(project),
+                    goal: segment.goal
+                )
+            )
+        ) { raw in
+            replaceChapter(raw, at: index)
+        }
+    }
+
+    private func replaceChapter(_ raw: String, at index: Int) {
+        guard var project = writing.project(projectID),
+              project.segments.indices.contains(index) else { return }
+        let parsed = WritingPrompts.splitChapter(raw, fallbackTitle: project.segments[index].title)
+        var segment = project.segments[index]
+        segment.title = parsed.title
+        segment.text = parsed.body
+        segment.createdAt = Date()
+        segment.generated = true
+        segment.issues = nil
+        // 正文换了，旧摘要就不能再用
+        segment.recap = nil
+        project.segments[index] = segment
+        writing.update(project)
+    }
+
+    private func rewriteCount(from index: Int) -> Int {
+        guard let project else { return 0 }
+        return max(1, project.segments.count - index)
+    }
+
+    /// 从第 index 章往后重写：截掉这一段，把原来的章纲捡回来，交给连写流水线重新跑
+    private func rewriteFrom(_ index: Int) {
+        guard var project else { return }
+        let count = rewriteCount(from: index)
+        let goals = project.segments[index...].compactMap { $0.goal }
+        project.segments.removeSubrange(index...)
+        project.plan = goals.isEmpty ? nil : goals
+        writing.update(project)
+        pendingRewrite = nil
+        guard AISettings.shared.isConfigured else {
+            showNoConfig = true
+            return
+        }
+        showAutoWrite = true
+        pipeline.start(projectID: projectID, chapters: count, planFirst: false)
     }
 
     private func deleteSegment(_ segment: WritingSegment) {
@@ -370,6 +580,14 @@ struct WritingEditorView: View {
         }
         if args.contains("--open-chapter"), let first = project.segments.first {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { editingSegment = first }
+        }
+        if args.contains("--open-auto") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { showAutoWrite = true }
+        }
+        if args.contains("--auto-write") || args.contains("--open-outline") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                if args.contains("--open-outline") { showOutline = true } else { showAutoWrite = true }
+            }
         }
         guard args.contains("--write-gen"), request == nil else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {

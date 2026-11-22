@@ -48,6 +48,17 @@ struct WritingSegment: Identifiable, Codable, Hashable {
     /// 初稿是 AI 写的（之后用户改过也仍为 true，只表示来源，不代表未经修改）
     var generated: Bool = false
 
+    /// 这一章要完成什么（排章时写下的一句话），生成时当成硬约束
+    var goal: String? = nil
+    /// 审查时顺手产出的一句话摘要。
+    ///
+    /// 这是长篇能写下去的关键：一百章不可能每次把全文发给模型，
+    /// 但让它「写完顺便交一句 40 字摘要」几乎不额外花钱 —— 审查那次调用本来就要读完整章。
+    /// 之后写第 80 章时，前 79 章的摘要（约 3000 字）就够交代来龙去脉。
+    var recap: String? = nil
+    /// 最近一次审查没过、但用户选择保留时留下的问题
+    var issues: [String]? = nil
+
     var wordCount: Int { text.count }
 
     /// 卡片上显示的三行预览
@@ -78,6 +89,20 @@ struct WritingProject: Identifiable, Codable, Hashable {
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
     var segments: [WritingSegment] = []
+
+    /// 故事大纲 / 设定集：主线、人物、世界观、禁忌。每次生成都带上，是长篇不跑偏的锚。
+    /// 用可选类型是为了让加这个字段之前存下的稿子还能解码（非可选加默认值解码会直接失败）。
+    var outline: String? = nil
+    /// 章纲队列：接下来每一章要写什么（一句话一条），排章时写入，按顺序消费。
+    var plan: [String]? = nil
+
+    var outlineText: String { outline ?? "" }
+
+    /// 下一章的目标（还没写的第一条章纲）
+    var nextGoal: String? {
+        guard let plan, !plan.isEmpty else { return nil }
+        return plan.first
+    }
 
     var wordCount: Int { segments.reduce(0) { $0 + $1.wordCount } }
 

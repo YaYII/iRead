@@ -265,13 +265,18 @@ struct WritingHomeView: View {
            writing.projects.isEmpty {
             let title = args[index + 1]
             let book = store.books.first { !$0.isComic }
-            let project = writing.create(
+            var project = writing.create(
                 title: title,
                 mode: book == nil ? .original : .rewrite,
                 brief: "都市悬疑，节奏快一点",
                 sourceBookID: book?.id,
                 sourceBookTitle: book?.title
             )
+            // `--seed-outline "..."`：给样本稿塞一份大纲，用来测连写是不是真的照着走
+            if let i = args.firstIndex(of: "--seed-outline"), i + 1 < args.count {
+                project.outline = args[i + 1]
+                writing.update(project)
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { path = [project.id] }
         }
         // 仅供截图：直接打开最近一本

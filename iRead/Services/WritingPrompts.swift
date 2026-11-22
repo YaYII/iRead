@@ -19,6 +19,10 @@ enum WritingPrompts {
     3. 不复述、不重复已有内容，直接进入场景。
     4. 保持原作的人称（第一/第三人称）与时态，人物称呼不变。
     5. 不写露骨性描写，不写违法犯罪的具体操作细节。
+    6. 人物只用大纲与前文里出现过的人。需要跑龙套时，一句话带过、不给姓名。
+    7. 不要自己发明具体数字：门牌号、楼层、房间号、几点几分、几天几号、金额。\
+    大纲或前文写了的照抄，没写的就模糊处理（「楼上」「傍晚」「一笔不小的钱」）。\
+    这类细节一旦编错，后面几十章都会跟着错。
     """
 
     // MARK: - 阅读页：改写本章
@@ -157,10 +161,23 @@ enum WritingPrompts {
 
     // MARK: - 写作模块：下一章
 
-    static func nextChapter(
-        project: WritingProject,
-        recent: String
-    ) -> [AIMessage] {
+    /// 续写上下文。结构体而不是一长串参数：字段还会加，调用点不想每加一个就改一遍。
+    struct Context {
+        /// 故事大纲 / 设定集
+        var outline: String = ""
+        /// 已完成章节的「标题 + 一句话摘要」，一行一条。长篇靠它维持记忆
+        var recaps: String = ""
+        /// 最近一两章的正文（已截断）
+        var recent: String = ""
+        /// 这一章要完成什么
+        var goal: String?
+        /// 底本开篇。只有第一章需要，用来借语感和设定
+        var sourceOpening: String?
+        /// 上一版没过审的原因，重写时带上
+        var feedback: [String] = []
+    }
+
+    static func nextChapter(project: WritingProject, context: Context) -> [AIMessage] {
         let number = project.segments.count + 1
         var user = """
         【这本书】《\(project.title)》
@@ -172,15 +189,328 @@ enum WritingPrompts {
 
             """
         }
-        user += """
-        【前文（最近的部分，结尾就是续写的起点）】
-        \(clip(recent, 9000))
+        if !context.outline.isEmpty {
+            user += """
+            【大纲与设定（必须遵守：人物名、身份、关系、世界规则都不能改）】
+            \(clip(context.outline, 4000))
 
-        【任务】接着写第\(number)章，1800–2500 字。
+            """
+        }
+        if let sourceOpening = context.sourceOpening, !sourceOpening.isEmpty, number == 1 {
+            user += """
+            【底本开篇（借用它的设定与语感，不许照抄句子）】
+            \(clip(sourceOpening, 4000))
+
+            """
+        }
+        if !context.recaps.isEmpty {
+            user += """
+            【前情（已完成章节的摘要，按顺序）】
+            \(context.recaps)
+
+            """
+        }
+        if !context.recent.isEmpty {
+            user += """
+            【最近正文（语气与场景从这里接，结尾就是起点）】
+            \(clip(context.recent, 6000))
+
+            """
+        }
+        user += """
+        【任务】接着写第\(number)章，2200–3000 字。
         - 第一行写标题，格式「第\(number)章 标题」，标题不超过 16 字；空一行，再写正文。
-        - 沿用前文的人称与文风；不要重复上章已经交代过的信息。
-        - 这一章要有一个小推进 + 一个小悬念，结尾留钩子。
+        - 沿用前文的人称与文风；不要重复上章已经交代过的信息，不要写「如前所述」。
+        - 这一章要有一个明确推进 + 一个小悬念，结尾留钩子。
         """
+        if let goal = context.goal, !goal.isEmpty {
+            user += """
+
+            【本章目标（必须完成，但不能靠人物直接说出来）】
+            \(goal)
+            """
+        }
+        if !context.feedback.isEmpty {
+            user += """
+
+            【上一版没过审的原因，这一版必须改掉】
+            \(context.feedback.map { "- \($0)" }.joined(separator: "\n"))
+
+            【怎么改】只动出问题的地方，其余段落尽量逐字保留。
+            不要整体重写 —— 整体重写会带进新的细节，又和前面几十章冲突。
+            """
+        }
+        return [.system(system), .user(user)]
+    }
+
+    // MARK: - 长篇：起草大纲
+
+    /// 用户可能只有一个方向，没有大纲。先让模型起一份草稿，用户再改 ——
+    /// 大纲是长篇唯一能压住「越写越飘」的东西，值得单独一步。
+    static func outlineDraft(
+        title: String,
+        brief: String,
+        taste: String,
+        sourceTitle: String?,
+        sourceOpening: String?,
+        existing: String
+    ) -> [AIMessage] {
+        var user = """
+        【这本书】《\(title)》
+        【方向】\(brief.isEmpty ? "没有特别指定，按读者口味来。" : brief)
+
+        """
+        if !taste.isEmpty {
+            user += """
+            【读者口味】书架上这些书：\(taste)
+            （只用来判断题材与调性，不要在大纲里提这些书名。）
+
+            """
+        }
+        if let sourceTitle, let sourceOpening, !sourceOpening.isEmpty {
+            user += """
+            【底本】《\(sourceTitle)》的开篇（借用设定与语感，不许照抄）
+            \(clip(sourceOpening, 3000))
+
+            """
+        }
+        if !existing.isEmpty {
+            user += """
+            【现有大纲（在它基础上补全，不要推翻重写）】
+            \(clip(existing, 3000))
+
+            """
+        }
+        user += """
+        【任务】写一份能支撑上百章的故事大纲，1000 字以内，按下面这几段写，用短句，不要用 Markdown 符号：
+        1. 一句话故事：谁，想要什么，被什么挡住。
+        2. 主角：名字、身份、最在意的东西、致命弱点。
+        3. 主要人物：3–6 个，每人一句，写清与主角的关系和各自的算盘。
+        4. 世界与规则：读者必须提前知道的设定，只写会用到的那几条。
+        5. 主线：分三到四个阶段，每阶段写「目标 → 阻碍 → 代价 → 阶段结果」。
+        6. 埋线：三到五条要长期埋、最后要回收的伏笔。
+        7. 禁忌：这本不写什么（比如不写重生、不搞无脑打脸、主角不许突然开挂）。
+        """
+        return [.system(system), .user(user)]
+    }
+
+    // MARK: - 长篇：排章
+
+    /// 一次排 N 章的一句话章纲。比逐章现想便宜得多，也让用户能提前看出走向对不对。
+    static func plan(project: WritingProject, from number: Int, count: Int) -> [AIMessage] {
+        var user = """
+        【这本书】《\(project.title)》
+
+        """
+        if !project.brief.isEmpty {
+            user += """
+            【方向】\(project.brief)
+
+            """
+        }
+        if !project.outlineText.isEmpty {
+            user += """
+            【大纲与设定】
+            \(clip(project.outlineText, 4000))
+
+            """
+        }
+        if !project.segments.isEmpty {
+            user += """
+            【已经写到第 \(project.segments.count) 章】
+            \(recapLines(project))
+
+            """
+        }
+        user += """
+        【任务】为接下来的 \(count) 章各写一句章纲，从第\(number)章开始。
+
+        要求：
+        - 每章一行，格式「第X章：一句话」，30 字以内。
+        - 要具体到事件（谁做了什么、结果如何），不要写「继续推进剧情」「矛盾升级」这种空话。
+        - 这 \(count) 章要构成一个完整的小段落：有起势、有推进、有阶段性收束，并在最后留下新钩子。
+        - 只输出这 \(count) 行，不要解释，不要写正文。
+
+        示例：
+        第\(number)章：主角在旧书店发现一封没有邮戳的信
+        """
+        return [.system(system), .user(user)]
+    }
+
+    // MARK: - 长篇：审查
+
+    private static let reviewSystem = """
+    你是一位严格的中文小说审稿编辑。你的活儿是拦住硬伤，不是评价文笔。
+
+    只输出一个 JSON 对象，不要 Markdown 代码块，不要任何解释文字。格式：
+    {"pass": true 或 false, "issues": ["问题1", "问题2"], "recap": "本章摘要"}
+
+    判定规则：
+    - 出现下列任何一种，pass 必须是 false，并把问题写进 issues：
+      a) 与【大纲】的人物名、身份、关系、世界规则冲突；
+      b) 时间线倒错，或已经死掉/离开的人又正常出现；
+      c) 与【最近正文】的情节明显重复，或把上一章已经发生的事又写了一遍；
+      d) 正文里有元信息（「以下是」「本章完」「约 2000 字」）、提纲式流水账、作者旁白；
+      e) 整章没有完成【本章目标】里要求的事。
+    - 文笔偏好（够不够美、节奏快慢）不算硬伤，不要因此判 false。
+    - issues 最多 3 条，每条一句话，必须指出具体的人名/事件，不要写「建议加强冲突」这类空话。
+    - 没有问题就返回空数组。
+    - recap 用 40 字以内陈述事实：谁做了什么、结果如何、留下什么钩子。不要评价，不要剧透后面。
+    """
+
+    static func review(
+        project: WritingProject,
+        chapterTitle: String,
+        chapterText: String,
+        goal: String?,
+        recent: String
+    ) -> [AIMessage] {
+        var user = """
+        【书名】《\(project.title)》
+
+        """
+        if !project.outlineText.isEmpty {
+            user += """
+            【大纲与设定】
+            \(clip(project.outlineText, 4000))
+
+            """
+        }
+        user += """
+        【前情摘要】
+        \(recapLines(project))
+
+        """
+        if !recent.isEmpty {
+            user += """
+            【最近正文（用于判断是否重复）】
+            \(clip(recent, 3000))
+
+            """
+        }
+        if let goal, !goal.isEmpty {
+            user += """
+            【本章目标】
+            \(goal)
+
+            """
+        }
+        user += """
+        【待审章节】\(chapterTitle)
+        \(clip(chapterText, 8000))
+        """
+        return [.system(reviewSystem), .user(user)]
+    }
+
+    /// 审查结果
+    struct Verdict {
+        var pass: Bool
+        var issues: [String]
+        var recap: String
+    }
+
+    /// 解析审查输出。
+    ///
+    /// 模型经常把 JSON 包在 ```json 里，或者在前面加一句「好的」。所以先截取第一个 `{`
+    /// 到最后一个 `}`，再解析；还是失败就**按通过处理**并留一条警告 ——
+    /// 审查是辅助，不该因为格式问题把一章好稿反复重写、白烧额度。
+    static func parseVerdict(_ raw: String) -> (verdict: Verdict, warning: String?) {
+        let start = raw.firstIndex(of: "{")
+        let end = raw.lastIndex(of: "}")
+        guard let start, let end, start < end,
+              let data = String(raw[start...end]).data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return (Verdict(pass: true, issues: [], recap: ""), "审查没给出可解析的结论，按通过处理")
+        }
+        let pass = object["pass"] as? Bool ?? true
+        let issues = (object["issues"] as? [String]) ?? []
+        let recap = (object["recap"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return (Verdict(pass: pass, issues: issues, recap: recap), nil)
+    }
+
+    /// 已完结章节的「序号 + 标题 + 摘要」，一行一条。没有摘要的老稿子退回用标题。
+    static func recapLines(_ project: WritingProject, limit: Int = 160) -> String {
+        let segments = project.segments
+        guard !segments.isEmpty else { return "（还没有）" }
+        // 超过 limit 章时保留最近的部分：更早的靠大纲承担，全塞进去只会撑爆上下文
+        let picked = segments.count > limit ? Array(segments.suffix(limit)) : segments
+        let offset = segments.count - picked.count
+        var lines: [String] = []
+        if offset > 0 {
+            lines.append("（更早的 \(offset) 章略，按大纲把握即可）")
+        }
+        for (i, segment) in picked.enumerated() {
+            let number = offset + i + 1
+            let recap = (segment.recap ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if recap.isEmpty {
+                lines.append("第\(number)章 \(segment.title)")
+            } else {
+                lines.append("第\(number)章 \(segment.title)：\(recap)")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    // MARK: - 写作模块：重写某一章
+
+    /// 单章重写：不建议它改剧情，因为后面几十章都建立在「这一章发生过什么」上。
+    static func rewriteChapterAt(
+        project: WritingProject,
+        index: Int,
+        segment: WritingSegment,
+        previousTail: String,
+        context: Context
+    ) -> [AIMessage] {
+        let number = index + 1
+        var user = """
+        【这本书】《\(project.title)》 · 第\(number)章
+
+        """
+        if !project.outlineText.isEmpty {
+            user += """
+            【大纲与设定】
+            \(clip(project.outlineText, 4000))
+
+            """
+        }
+        if !context.recaps.isEmpty {
+            user += """
+            【前情摘要】
+            \(context.recaps)
+
+            """
+        }
+        if !previousTail.isEmpty {
+            user += """
+            【上一章结尾（只用于衔接，不要重写它）】
+            \(clip(previousTail, 1500))
+
+            """
+        }
+        user += """
+        【现在的版本】
+        \(clip(segment.text, 12000))
+
+        【任务】把这一章重写一遍，2200–3000 字。
+        - 已发生的关键事件、人物关系、时间地点一个都不能改 —— 后面的章节都建立在这些事实上。\
+        要改的是叙述顺序、场景细节、对话质感、情绪铺陈。
+        - 保持与上一章结尾的衔接，第一句直接进场景。
+        - 第一行写标题，格式「第\(number)章 标题」；空一行再写正文。
+        """
+        if let goal = segment.goal, !goal.isEmpty {
+            user += """
+
+            【本章目标（重写后仍要完成）】
+            \(goal)
+            """
+        }
+        if let issues = segment.issues, !issues.isEmpty {
+            user += """
+
+            【上一版的问题，这一版必须避免】
+            \(issues.map { "- \($0)" }.joined(separator: "\n"))
+            """
+        }
         return [.system(system), .user(user)]
     }
 
