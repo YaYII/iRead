@@ -114,6 +114,12 @@ struct ContentView: View {
                 .environmentObject(store)
                 .environmentObject(settings)
         }
+        // 下载任务页：搜书页那颗下载胶囊点开的就这一个入口。
+        // 之前 showDownloads 只被赋值、没有对应的 sheet，点了没反应（页面写了但没接上）。
+        .sheet(isPresented: $showDownloads) {
+            DownloadTasksView()
+                .environmentObject(settings)
+        }
         .onAppear {
             // 仅供自动化预览/截图使用，正常启动不会命中
             let args = ProcessInfo.processInfo.arguments
@@ -136,6 +142,12 @@ struct ContentView: View {
             // --debug-search：直接切到搜书页（自测/自动化用）
             if args.contains("--debug-search") {
                 selection = 1
+            }
+            // --debug-downloads：直接打开下载任务页（自测/截图用）
+            if args.contains("--debug-downloads") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    showDownloads = true
+                }
             }
             // --comic-search=关键字：直接切到漫画页并自动搜索
             if args.contains(where: { $0.hasPrefix("--comic-search") }) {

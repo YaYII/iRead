@@ -3,6 +3,7 @@ import SwiftUI
 
 /// 下载任务页：展示所有章节下载任务的状态与进度，支持取消、移除与清理已结束任务。
 struct DownloadTasksView: View {
+    @Environment(\.dismiss) private var dismiss
     @ObservedObject private var settings = ReaderSettings.shared
     @ObservedObject private var downloadManager = NovelDownloadManager.shared
 
@@ -48,6 +49,18 @@ struct DownloadTasksView: View {
             }
             .buttonStyle(.plain)
             .disabled(!hasFinished)
+            // 以 sheet 呈现，得给个明确的关闭入口（下拉虽然也能关，但不明显）
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(settings.theme.secondary)
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(settings.theme.foreground.opacity(0.07)))
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, 8)
         }
         .padding(.horizontal, 20)
         .padding(.top, 20)
