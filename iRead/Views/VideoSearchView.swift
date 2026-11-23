@@ -11,6 +11,8 @@ struct VideoSearchView: View {
 
     @ObservedObject private var settings = ReaderSettings.shared
     @ObservedObject private var store = VideoStore.shared
+    /// 订阅下载器，卡片上的下载进度环才会动
+    @ObservedObject private var downloads = MediaDownloader.shared
 
     @State private var keyword = ""
     @State private var items: [VideoItem] = []
@@ -204,7 +206,9 @@ struct VideoSearchView: View {
         }
     }
 
-    private func card(_ item: VideoItem) -> some View {
+    private func card(_ entry: VideoItem) -> some View {
+        // 和音乐同理：搜索结果里的副本没有 localFile，下载完要回 store 取
+        let item = store.item(id: entry.id) ?? entry
         let state = store.downloadState(for: item)
         return Button {
             searchFocused = false

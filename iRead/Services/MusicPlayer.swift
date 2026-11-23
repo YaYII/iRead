@@ -33,13 +33,6 @@ final class MusicPlayer: ObservableObject {
 
     var isActive: Bool { track != nil }
 
-    /// 当前这首的下载进度（0...1），没在下载时为 nil。播放器界面用来显示「缓冲」细节。
-    var downloadProgress: Double? {
-        guard let track, !track.isCached,
-              let state = MusicStore.shared.cacheState(for: track) else { return nil }
-        return state.isActive ? state.progress : nil
-    }
-
     // MARK: - 播放控制
 
     /// 播放一首歌。`queue` 传当前列表，用于上一首/下一首。

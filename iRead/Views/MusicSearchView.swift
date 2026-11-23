@@ -9,6 +9,8 @@ struct MusicSearchView: View {
     @ObservedObject private var settings = ReaderSettings.shared
     @ObservedObject private var store = MusicStore.shared
     @ObservedObject private var player = MusicPlayer.shared
+    /// 订阅下载器，「存到本机」的进度环才会动
+    @ObservedObject private var downloads = MediaDownloader.shared
 
     @State private var keyword = ""
     @State private var results: [MusicTrack] = []
@@ -203,7 +205,10 @@ struct MusicSearchView: View {
         .padding(.bottom, 8)
     }
 
-    private func row(_ track: MusicTrack, in queue: [MusicTrack]) -> some View {
+    private func row(_ item: MusicTrack, in queue: [MusicTrack]) -> some View {
+        // 搜索结果里的是「刚搜到的副本」，cachedFile 一定为空。
+        // 显示状态要回 store 取，否则已经存过的歌还挂着下载按钮。
+        let track = store.track(id: item.id) ?? item
         let isCurrent = player.track?.id == track.id
         let cacheState = store.cacheState(for: track)
 
@@ -346,7 +351,13 @@ struct MusicSearchView: View {
                 self.isSearching = false
             }
             try? await Task.sleep(nanoseconds: 1_200_000_000)
-            await MainActor.run { self.player.play(first, queue: list) }
+            await MainActor.run {
+                self.player.play(first, queue: list)
+                // 截图用：自检时也想看看全屏播放器的真实排版
+                if ProcessInfo.processInfo.arguments.contains("--music-open-player") {
+                    self.player.wantsPlayerSheet = true
+                }
+            }
 
             // 首播走「先下载再放」，9 MB 的曲子要几秒，固定等 12s 会测早了。
             // 轮询到落盘（或失败）为止，最多等 45 秒。
@@ -355,6 +366,15 @@ struct MusicSearchView: View {
                 let stored = MusicStore.shared.track(id: first.id)
                 if stored?.isCached == true { break }
                 if let state = MusicStore.shared.cacheState(for: first), state.failed != nil { break }
+                // 每 2 秒打一次，能看出进度是真在走还是从 0 直接跳完成
+                if waited.truncatingRemainder(dividingBy: 2) == 0 {
+                    let state = MusicStore.shared.cacheState(for: first)
+                    NSLog("[Music selftest] t=%.0fs progress=%.2f received=%lld/%lld",
+                          waited,
+                          state?.progress ?? -1,
+                          state?.received ?? 0,
+                          state?.total ?? 0)
+                }
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 waited += 0.5
             }

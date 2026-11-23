@@ -6,10 +6,19 @@ struct MusicPlayerView: View {
     @ObservedObject private var player = MusicPlayer.shared
     @ObservedObject private var store = MusicStore.shared
     @ObservedObject private var settings = ReaderSettings.shared
+    /// 必须订阅下载器，否则「正在存到本机 xx%」会永远停在 0%
+    @ObservedObject private var downloads = MediaDownloader.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var isScrubbing = false
     @State private var scrubValue: Double = 0
+
+    /// 播放器里的是 `play()` 那一刻的快照，缓存完成 / 收藏变化都写在 store 里。
+    /// 显示时按 id 回 store 取最新的一份，否则「已存到本机」永远不会亮。
+    private var liveTrack: MusicTrack? {
+        guard let track = player.track else { return nil }
+        return store.track(id: track.id) ?? track
+    }
 
     var body: some View {
         ZStack {
@@ -58,7 +67,7 @@ struct MusicPlayerView: View {
 
             Spacer()
 
-            Text(player.isPlaying ? "正在播放" : "已暂停")
+            Text(statusText)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(settings.theme.secondary)
                 .tracking(0.6)
@@ -66,18 +75,25 @@ struct MusicPlayerView: View {
             Spacer()
 
             Button {
-                if let id = player.track?.id {
+                if let id = liveTrack?.id {
                     store.toggleFavorite(id)
                 }
             } label: {
-                Image(systemName: (player.track?.isFavorite == true) ? "heart.fill" : "heart")
+                Image(systemName: (liveTrack?.isFavorite == true) ? "heart.fill" : "heart")
                     .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle((player.track?.isFavorite == true) ? settings.theme.accent : settings.theme.secondary)
+                    .foregroundStyle((liveTrack?.isFavorite == true) ? settings.theme.accent : settings.theme.secondary)
                     .frame(width: 36, height: 36)
             }
             .buttonStyle(.plain)
         }
         .padding(.top, 8)
+    }
+
+    /// 缓冲/下载中也算一种状态，写「已暂停」会让人以为自己按错了
+    private var statusText: String {
+        if player.isPlaying { return "正在播放" }
+        if player.isBuffering { return "正在准备" }
+        return "已暂停"
     }
 
     private var artwork: some View {
@@ -244,17 +260,18 @@ struct MusicPlayerView: View {
 
     private var footer: some View {
         VStack(spacing: 8) {
-            if let track = player.track {
+            if let track = liveTrack {
                 HStack(spacing: 6) {
                     if track.isCached {
                         Label("已存到本机", systemImage: "checkmark.circle.fill")
                             .foregroundStyle(settings.theme.accent)
                     } else if let state = store.cacheState(for: track), state.isActive {
-                        // 首播是「先下后放」：不下完不出声，所以文案要说清在等什么
+                        // 首播是「先下后放」：不下完不出声，所以文案要说清在等什么。
+                        // 头几秒服务端还没回包，received 是 0 —— 这时写 0% 看着像卡死。
                         let percent = Int(state.progress * 100)
                         Label {
-                            Text(player.isPlaying
-                                 ? "正在存到本机 \(percent)%"
+                            Text(state.received == 0
+                                 ? "首次播放，正在连接曲库…"
                                  : "首次播放，正在下载 \(percent)%（存好自动开始）")
                         } icon: {
                             Image(systemName: "arrow.down.circle")

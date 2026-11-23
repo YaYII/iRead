@@ -162,6 +162,8 @@ final class MediaDownloader: NSObject, ObservableObject, URLSessionDownloadDeleg
         DispatchQueue.main.async {
             var state = self.states[id] ?? DownloadState()
             body(&state)
+            // 兜底：任何路径写进来的 nan/inf 都不许流到界面（进度环会直接消失）
+            if !state.progress.isFinite { state.progress = 0 }
             self.states[id] = state
         }
     }
