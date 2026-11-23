@@ -19,12 +19,16 @@ enum ScreenAwake {
         case pipeline
         /// 单章生成面板（写下一章、续写、按意见改这章）
         case generation
+        /// 记场记：采用改稿后要再跑一次抽取，放在面板关掉之后，
+        /// 这时没有别的 holder 撑着，用户一锁屏这条记录就断了
+        case log
 
         var debugName: String {
             switch self {
             case .reading: return "reading"
             case .pipeline: return "pipeline"
             case .generation: return "generation"
+            case .log: return "log"
             }
         }
     }

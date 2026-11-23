@@ -29,6 +29,7 @@ struct WritingEditorView: View {
     @State private var showNoConfig = false
     @State private var showAutoWrite = false
     @State private var showOutline = false
+    @State private var showLog = false
     /// 待确认「从第 N 章往后重写」的下标
     @State private var pendingRewrite: Int?
 
@@ -95,7 +96,8 @@ struct WritingEditorView: View {
                 GenerationSheet(
                     headline: item.headline,
                     detail: item.detail,
-                    messages: item.messages
+                    messages: item.messages,
+                    confirmBeforeSave: item.confirmBeforeSave
                 ) { raw in
                     // 由请求自己决定落到哪儿：新写一章、还是替换某一章
                     item.onSave(raw)
@@ -110,6 +112,10 @@ struct WritingEditorView: View {
                 OutlineSheet(projectID: projectID)
                     .environmentObject(settings)
                     .environmentObject(store)
+            }
+            .sheet(isPresented: $showLog) {
+                StoryLogView(projectID: projectID)
+                    .environmentObject(settings)
             }
             .sheet(item: Binding(
                 get: { exportURL.map { ExportFile(url: $0) } },
@@ -281,6 +287,29 @@ struct WritingEditorView: View {
                         .font(.system(size: 8, weight: .semibold))
                 }
                 .foregroundStyle(project.outlineText.isEmpty ? theme.secondary : theme.accent)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            Button {
+                showLog = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "text.line.last.and.arrowtriangle.forward")
+                        .font(.system(size: 11))
+                    Text(project.logEntries.isEmpty
+                         ? "还没有线索日志 —— 写完一章会自动记"
+                         : "线索日志 · \(project.logEntries.count) 条事实")
+                        .font(.caption)
+                    Spacer()
+                    if !project.pendingThreads.isEmpty {
+                        Text("\(project.pendingThreads.count) 条伏笔没收")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .semibold))
+                }
+                .foregroundStyle(project.logEntries.isEmpty ? theme.secondary : theme.accent)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -592,6 +621,10 @@ struct WritingEditorView: View {
         guard let project, project.segments.indices.contains(index) else { return }
         let segment = project.segments[index]
         let note = commentText(segment)
+        // 摘要只取这一章之前的：本章自己的旧摘要正是要被改掉的那版，
+        // 塞回上下文模型会照着旧结论把意见又改回去（流水线里踩过这个坑）。
+        var before = project
+        before.segments = Array(project.segments.prefix(index))
         request = GenerationRequest(
             headline: note.isEmpty ? "重写第 \(index + 1) 章" : "按意见改第 \(index + 1) 章",
             detail: note.isEmpty
@@ -604,25 +637,31 @@ struct WritingEditorView: View {
                 previousTail: index > 0 ? project.segments[index - 1].text : "",
                 context: WritingPrompts.Context(
                     outline: project.outlineText,
-                    recaps: WritingPrompts.recapLines(project),
+                    recaps: WritingPrompts.recapLines(before),
+                    log: WritingPrompts.logLines(before),
                     goal: segment.goal
                 ),
                 comment: note.isEmpty ? nil : note
-            )
+            ),
+            // 单章重写要让人先看见成品再决定换不换：一章改完直接落盘，
+            // 用户回头才发现「被改了」，连原稿都找不回来。预览页里能对照、能反悔。
+            confirmBeforeSave: true
         ) { raw in
             replaceChapter(raw, at: index)
         }
     }
 
-    /// 只改这一章：直接进流水线，好在后台有了统一的进度/日志/暂停，
-    /// 也不会像单章面板那样必须开着才继续。
+    /// 单章重写走生成面板，不进「连写」流水线。
+    ///
+    /// 之前这里 `showAutoWrite = true`，点了「重写本章」弹出来的是「连写 5 章」的配置页 ——
+    /// 看起来像按错了。而且流水线的单章重写只认真的写过意见的章，没意见的会被直接丢掉，
+    /// 用户等半天什么都没发生。
     private func rewriteOne(_ index: Int) {
         guard AISettings.shared.isConfigured else {
             showNoConfig = true
             return
         }
-        showAutoWrite = true
-        pipeline.startRewrite(projectID: projectID, indexes: [index])
+        startRewrite(index)
     }
 
     /// 一次改完所有批过意见的章。这是「审阅完 → 一键落地」的入口。
@@ -634,8 +673,10 @@ struct WritingEditorView: View {
             showNoConfig = true
             return
         }
-        showAutoWrite = true
+        // 先起流水线再弹面板：反过来的话面板先 onAppear，那时 stage 还没跑起来，
+        // 会停在「连写 5 章」的配置页，看着像按错了按钮。
         pipeline.startRewrite(projectID: projectID, indexes: indexes)
+        showAutoWrite = true
     }
 
     private func replaceChapter(_ raw: String, at index: Int) {
@@ -655,6 +696,10 @@ struct WritingEditorView: View {
         segment.commentAt = nil
         project.segments[index] = segment
         writing.update(project)
+        // 正文换了，这一章的场记就是过期的：重记一遍，日志才和正文对得上
+        Task { @MainActor in
+            await StoryLogService.harvest(projectID: projectID, segmentID: segment.id, chapterIndex: index)
+        }
     }
 
     private func rewriteCount(from index: Int) -> Int {
@@ -759,6 +804,13 @@ struct WritingEditorView: View {
                 if args.contains("--open-outline") { showOutline = true } else { showAutoWrite = true }
             }
         }
+        if args.contains("--open-log") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Demo.step(0.7)) { showLog = true }
+        }
+        if args.contains("--open-rewrite"), let first = project.segments.first,
+           let index = project.segments.firstIndex(where: { $0.id == first.id }) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Demo.step(0.7)) { rewriteOne(index) }
+        }
         guard args.contains("--write-gen"), request == nil else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             if request == nil { startGeneration(project) }
@@ -772,6 +824,9 @@ struct GenerationRequest: Identifiable {
     let headline: String
     let detail: String
     let messages: [AIMessage]
+    /// true = 生成完先停在预览，用户点「采用」才落盘。
+    /// 单章重写用它：改稿是「可能想要」的东西，不问一声就替换，用户连原稿都找不回来。
+    var confirmBeforeSave: Bool = false
     let onSave: (String) -> Void
 }
 
@@ -901,35 +956,61 @@ struct ChapterEditorView: View {
     /// 改动前的正文，自己跑完再点「完成」，`flush()` 会把新章整段覆盖回旧的。
     private var rewriteBar: some View {
         VStack(spacing: 5) {
-            Button {
-                flush()
-                onRewrite?()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: hasComment ? "wand.and.stars" : "arrow.clockwise")
-                        .font(.system(size: 12, weight: .semibold))
-                    Text(hasComment ? "按意见重写这一章" : "重写这一章")
-                        .font(.subheadline.weight(.semibold))
-                    Spacer(minLength: 0)
-                    Text(hasComment ? "意见已存" : "先写意见更准")
-                        .font(.caption2)
-                        .opacity(0.8)
+            HStack(spacing: 8) {
+                Button {
+                    flush()
+                    onRewrite?()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: hasComment ? "wand.and.stars" : "arrow.clockwise")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(hasComment ? "按意见重写这一章" : "重写这一章")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer(minLength: 0)
+                        if hasComment {
+                            Text("意见已存")
+                                .font(.caption2)
+                                .opacity(0.8)
+                        }
+                    }
+                    .foregroundStyle(hasComment ? theme.background : theme.accent)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 11)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(hasComment ? theme.accent : theme.accent.opacity(0.12))
+                    )
+                    .contentShape(Rectangle())
                 }
-                .foregroundStyle(hasComment ? theme.background : theme.accent)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 11)
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(hasComment ? theme.accent : theme.accent.opacity(0.12))
-                )
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .disabled(onRewrite == nil)
+                .opacity(onRewrite == nil ? 0.5 : 1)
+
+                if !hasComment {
+                    // 「先写意见更准」原来只是主按钮里的一句提示文字，点它等于直接重写 ——
+                    // 以为在写意见，结果整章被换掉。改成独立按钮，各点各的。
+                    Button {
+                        flush()
+                        showComment = true
+                    } label: {
+                        VStack(spacing: 2) {
+                            Image(systemName: "text.bubble")
+                                .font(.system(size: 13, weight: .semibold))
+                            Text("写意见")
+                                .font(.caption2.weight(.medium))
+                        }
+                        .foregroundStyle(theme.accent)
+                        .frame(width: 60)
+                        .padding(.vertical, 5)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(theme.accent.opacity(0.12)))
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .buttonStyle(.plain)
-            .disabled(onRewrite == nil)
 
             Text(hasComment
                  ? "只改这一章：意见点到的地方改到位，没点到的句子保留"
-                 : "整章重写：已发生的事件、人名和关系不变")
+                 : "整章重写：已发生的事件、人名和关系不变；改完先给你看，采用才替换")
                 .font(.caption2)
                 .foregroundStyle(theme.secondary)
         }
@@ -1165,6 +1246,8 @@ struct GenerationSheet: View {
     let headline: String
     let detail: String
     let messages: [AIMessage]
+    /// 写完先停在这里，等用户点「采用」再落盘（单章重写用）
+    var confirmBeforeSave = false
     var onSave: (String) -> Void
 
     @EnvironmentObject private var settings: ReaderSettings
@@ -1187,6 +1270,14 @@ struct GenerationSheet: View {
     @State private var started = false
 
     private var theme: ReadingTheme { settings.theme }
+
+    /// 采用前显示的是「定稿的样子」：模型给的第一行是章节标题，
+    /// 落盘时会被拆出去；预览里还留着，就会看到标题在正文里重复一遍。
+    private var parsed: (title: String, body: String) {
+        confirmBeforeSave
+            ? WritingPrompts.splitChapter(text, fallbackTitle: "")
+            : (title: "", body: text)
+    }
 
     var body: some View {
         NavigationStack {
@@ -1235,6 +1326,11 @@ struct GenerationSheet: View {
                 .font(.caption2)
                 .foregroundStyle(theme.secondary)
                 .lineLimit(2)
+            if confirmBeforeSave, !parsed.title.isEmpty, phase == .done {
+                Text("采用后标题会换成「\(parsed.title)」")
+                    .font(.caption2)
+                    .foregroundStyle(theme.accent)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
@@ -1245,6 +1341,9 @@ struct GenerationSheet: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+                    // 流式时一直贴着底部滚；写完后（尤其是「采用前先看」的那种）
+                    // 就停在章末，用户一睁眼看到的是结尾。留一个锚点好滚回开头。
+                    Color.clear.frame(height: 1).id("top")
                     if let errorText {
                         VStack(alignment: .leading, spacing: 8) {
                             Label("这次没写成", systemImage: "exclamationmark.triangle")
@@ -1265,7 +1364,7 @@ struct GenerationSheet: View {
                         }
                         .padding(.top, 20)
                     } else {
-                        Text(text + (phase == .running ? "▍" : ""))
+                        Text(parsed.body + (phase == .running ? "▍" : ""))
                             .font(.custom("Songti SC", size: 17))
                             .foregroundStyle(theme.foreground)
                             .lineSpacing(8)
@@ -1278,6 +1377,12 @@ struct GenerationSheet: View {
             }
             .onChange(of: text) { _, _ in
                 proxy.scrollTo("bottom", anchor: .bottom)
+            }
+            .onChange(of: phase) { _, newValue in
+                // 写完先从头看：这是「要不要这一版」的判断现场，停在结尾没法判断
+                if newValue == .done, confirmBeforeSave {
+                    proxy.scrollTo("top", anchor: .top)
+                }
             }
         }
     }
@@ -1304,25 +1409,60 @@ struct GenerationSheet: View {
                         .frame(width: 68)
                 }
             case .done:
-                HStack(spacing: 10) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(theme.accent)
-                    Text("已保存到这本稿子")
-                        .font(.caption)
-                        .foregroundStyle(theme.secondary)
-                    Spacer()
-                    Button("完成") { dismiss() }
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(theme.accent)
+                if confirmBeforeSave {
+                    // 采用之前什么都不写进稿子：这是「看不顺眼就退回去」的唯一保障
+                    VStack(spacing: 6) {
+                        Text("这一版还没替换进去。看着不对就点「保留原稿」，什么都不改。")
+                            .font(.caption2)
+                            .foregroundStyle(theme.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        HStack(spacing: 10) {
+                            Button {
+                                onSave(text)
+                                dismiss()
+                            } label: {
+                                Text("采用这一版")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(theme.background)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                                    .background(RoundedRectangle(cornerRadius: 11).fill(theme.accent))
+                            }
+                            .buttonStyle(.plain)
+                            Button {
+                                dismiss()
+                            } label: {
+                                Text("保留原稿")
+                                    .font(.subheadline)
+                                    .foregroundStyle(theme.secondary)
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 12)
+                                    .background(RoundedRectangle(cornerRadius: 11).fill(theme.foreground.opacity(0.06)))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                } else {
+                    HStack(spacing: 10) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(theme.accent)
+                        Text("已保存到这本稿子")
+                            .font(.caption)
+                            .foregroundStyle(theme.secondary)
+                        Spacer()
+                        Button("完成") { dismiss() }
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(theme.accent)
+                    }
+                    .padding(.vertical, 4)
                 }
-                .padding(.vertical, 4)
             case .stopped:
                 HStack(spacing: 10) {
                     Button {
                         onSave(text)
                         dismiss()
                     } label: {
-                        Text("保留这部分")
+                        Text(confirmBeforeSave ? "用这部分替换" : "保留这部分")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(theme.background)
                             .frame(maxWidth: .infinity)
@@ -1398,7 +1538,13 @@ struct GenerationSheet: View {
             }
             text = result
             phase = .done
-            onSave(result)
+            if !confirmBeforeSave {
+                onSave(result)
+            } else if ProcessInfo.processInfo.arguments.contains("--auto-adopt") {
+                // 自测：自动点「采用这一版」，验证落盘 + 场记重记那条链
+                onSave(result)
+                dismiss()
+            }
         } catch {
             if Task.isCancelled || error is CancellationError {
                 phase = .stopped

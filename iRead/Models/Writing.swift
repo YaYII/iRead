@@ -120,8 +120,41 @@ struct WritingProject: Identifiable, Codable, Hashable {
     var outline: String? = nil
     /// 章纲队列：接下来每一章要写什么（一句话一条），排章时写入，按顺序消费。
     var plan: [String]? = nil
+    /// 场记：到目前为止「已经发生的事实」，一条一句，每条都挂着来源章节。
+    ///
+    /// 这是长篇的记忆主体。之前只有每章一句的 `recap`，粒度太粗 ——
+    /// 写第 80 章时只知道「主角赢了」，不知道他此刻什么境界、伤了哪里、答应了谁。
+    /// 场记把这些拆成可查的条目，生成时按需带上，作者也能逐条核对 AI 有没有写飞。
+    var log: [StoryLogEntry]? = nil
 
     var outlineText: String { outline ?? "" }
+
+    /// 场记列表，会自动剔除「来源章节已经不在书里」的条目。
+    ///
+    /// 删章、从第 N 章往后重写都会让一批条目的 segmentID 悬空。留着它们有两个坏处：
+    /// 界面上点不开（点了一条没有出处的日志），生成时还会把删掉那章的设定喂回模型。
+    var logEntries: [StoryLogEntry] {
+        let alive = Set(segments.map(\.id))
+        return (log ?? []).filter { alive.contains($0.segmentID) }
+    }
+
+    /// 还没回收的伏笔：生成时永远带上，这是「别把自己埋的坑忘了」的唯一来源
+    var pendingThreads: [StoryLogEntry] {
+        logEntries.filter { $0.kind == .thread && !$0.resolved }
+    }
+
+    func log(forSegment id: String) -> [StoryLogEntry] {
+        logEntries.filter { $0.segmentID == id }
+    }
+
+    /// 还没有场记的章节下标（补齐日志用）
+    var chaptersWithoutLog: [Int] {
+        let covered = Set(logEntries.map(\.segmentID))
+        return segments.enumerated()
+            .filter { !$0.element.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .filter { !covered.contains($0.element.id) }
+            .map(\.offset)
+    }
 
     /// 下一章的目标（还没写的第一条章纲）
     var nextGoal: String? {

@@ -309,6 +309,7 @@ final class WritingPipeline: ObservableObject {
         var context = WritingPrompts.Context(
             outline: project.outlineText,
             recaps: WritingPrompts.recapLines(project),
+            log: WritingPrompts.logLines(project),
             recent: recent,
             goal: goal,
             sourceOpening: opening
@@ -403,6 +404,16 @@ final class WritingPipeline: ObservableObject {
         suspendedWhileRunning = false
         streamText = ""
 
+        // 顺手记场记：后面的章靠它维持事实一致，比多塞两章正文省得多。
+        // 失败不影响这一章，最多日志少一条 —— 不能因为记笔记失败把正文判成失败。
+        if let index = latest.segments.firstIndex(where: { $0.id == segment.id }) {
+            if let note = await StoryLogService.harvest(projectID: projectID,
+                                                        segmentID: segment.id,
+                                                        chapterIndex: index) {
+                add(.info, "场记：\(note)")
+            }
+        }
+
         if passed {
             // 标题里通常已经带「第N章」，日志不要再加一次，否则会「第1章 第1章 ……」
             add(.ok, "\(parsed.title) · \(finalWords) 字 · 通过审查")
@@ -474,6 +485,7 @@ final class WritingPipeline: ObservableObject {
                         context: WritingPrompts.Context(
                             outline: current.outlineText,
                             recaps: WritingPrompts.recapLines(before),
+                            log: WritingPrompts.logLines(before),
                             goal: segment.goal
                         ),
                         comment: note
@@ -518,6 +530,13 @@ final class WritingPipeline: ObservableObject {
                 next.commentAt = nil
                 latest.segments[index] = next
                 WritingStore.shared.update(latest)
+
+                // 正文换了，这一章的场记整批重记：旧场记记的是改之前的剧情
+                if let note = await StoryLogService.harvest(projectID: projectID,
+                                                            segmentID: next.id,
+                                                            chapterIndex: index) {
+                    add(.info, "场记：\(note)")
+                }
 
                 done += 1
                 completed += 1

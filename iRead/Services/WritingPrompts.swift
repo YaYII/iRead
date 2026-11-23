@@ -168,6 +168,8 @@ enum WritingPrompts {
         var outline: String = ""
         /// 已完成章节的「标题 + 一句话摘要」，一行一条。长篇靠它维持记忆
         var recaps: String = ""
+        /// 场记：已经发生的事实，按类分行。比摘要细、比正文省
+        var log: String = ""
         /// 最近一两章的正文（已截断）
         var recent: String = ""
         /// 这一章要完成什么
@@ -208,6 +210,13 @@ enum WritingPrompts {
             user += """
             【前情（已完成章节的摘要，按顺序）】
             \(context.recaps)
+
+            """
+        }
+        if !context.log.isEmpty {
+            user += """
+            【场记（已经发生的事实，前后必须对得上；这里没写的事不要自己发明）】
+            \(context.log)
 
             """
         }
@@ -470,6 +479,16 @@ enum WritingPrompts {
         \(recapLines(project))
 
         """
+        let logDigest = logLines(project)
+        if !logDigest.isEmpty {
+            // 审查判的是「和前面有没有冲突」，场记正是冲突的判据：
+            // 上一章还炼气三层，这一章突然金丹，得指出来
+            user += """
+            【场记（已发生的事实，用于查前后矛盾）】
+            \(logDigest)
+
+            """
+        }
         if !recent.isEmpty {
             user += """
             【最近正文（用于判断是否重复）】
@@ -540,6 +559,146 @@ enum WritingPrompts {
         return lines.joined(separator: "\n")
     }
 
+    /// 场记摘要：喂给模型的那一段。
+    ///
+    /// 顺序是刻意排的 —— 先摆没回收的伏笔（最容易被忘、后果最大），再摆最近的事实。
+    /// 超出字数上限时砍**最近事实的尾部以外**的部分，不砍伏笔：
+    /// 「他此刻是什么境界」可以靠最近的正文补，埋了三十章没交代的坑补不回来。
+    static func logLines(_ project: WritingProject, limit: Int = 60, budget: Int = 1400) -> String {
+        let entries = project.logEntries
+        guard !entries.isEmpty else { return "" }
+
+        var sections: [String] = []
+
+        let threads = entries
+            .filter { $0.kind == .thread && !$0.resolved }
+            .suffix(8)
+        if !threads.isEmpty {
+            sections.append("未回收的伏笔：\n" + threads
+                .map { "\($0.chapterLabel)｜\($0.summary)" }
+                .joined(separator: "\n"))
+        }
+
+        // 伏笔已经单独在上面列过，这里不重复；其余按时间顺序，保留最近的
+        let rest = entries.filter { !($0.kind == .thread && !$0.resolved) }
+        let picked = rest.count > limit ? Array(rest.suffix(limit)) : rest
+        if !picked.isEmpty {
+            var body = picked
+                .map { "\($0.kind.title)｜\($0.chapterLabel)｜\($0.subject)：\($0.summary)" }
+                .joined(separator: "\n")
+            if body.count > budget {
+                body = "（更早的略）\n" + String(body.suffix(budget))
+            }
+            sections.append("最近的事实：\n" + body)
+        }
+        return sections.joined(separator: "\n")
+    }
+
+    // MARK: - 场记：从一章里抽事实
+
+    /// 场记的抽取提示。
+    ///
+    /// 这一段不写作文要求，只写「记什么、不记什么」：模型天然会总结剧情，
+    /// 而场记要的是**状态**（他现在几层、伤了哪、答应过谁），两者不是一回事。
+    private static let logSystem = """
+    你是长篇小说的场记。你只做一件事：读完一章，把「以后写下去必须记住的事实」记下来。
+    只输出 JSON，不要解释，不要在 JSON 之外写任何字。
+    """
+
+    static func extractLog(
+        project: WritingProject,
+        chapterIndex: Int,
+        segment: WritingSegment,
+        known: String
+    ) -> [AIMessage] {
+        let number = chapterIndex + 1
+        var user = """
+        【书名】《\(project.title)》 · \(segment.title)
+
+        """
+        if !project.outlineText.isEmpty {
+            user += """
+            【大纲与设定（人物名以此为准）】
+            \(clip(project.outlineText, 2500))
+
+            """
+        }
+        if !known.isEmpty {
+            user += """
+            【已有场记（已经记过的不要重复记，除非这一章里状态变了）】
+            \(clip(known, 2500))
+
+            """
+        }
+        user += """
+        【这一章正文】
+        \(clip(segment.text, 9000))
+
+        【记什么】
+        1. character：人物的状态变了 —— 境界/等级、位置、伤势、身份、持有关系、对某人的态度。没变就不记。
+        2. event：改变了局势、后面必须承接的事。一章 1–2 条，不要复述整章剧情。
+        3. thread：这一章新埋的线索、许诺、威胁 —— 还没揭晓的那种。没有就不记。
+        4. item：拿到、失去、损坏、易手的关键物件或资源。
+        5. world：这一章首次讲清的规则（境界怎么分、钱怎么算、谁管着谁）。
+        不记文笔、不记评价、不记读者感受、不预测后面。
+
+        【subject】用书里的原名，不要写「主角」「他」。
+        【summary】一句话，40 字以内，只写事实。例：「从炼气二层突破到三层，右臂经脉受伤」。
+
+        【回收】如果这一章揭晓了上面「已有场记」里某条未回收的伏笔，把那条 summary 的前 12 个字原样放进 resolved 数组；没有就留空数组。
+
+        【输出】只输出这个 JSON，不要 Markdown 代码块：
+        {"entries":[{"kind":"character","subject":"萧炎","summary":"从炼气二层突破到三层，右臂经脉受伤"}],"resolved":[]}
+        """
+        return [.system(logSystem), .user(user)]
+    }
+
+    /// 一条还没落成 `StoryLogEntry` 的场记（章信息由调用方补）
+    struct LogDraft {
+        var kind: StoryLogKind
+        var subject: String
+        var summary: String
+    }
+
+    /// 解析场记输出。和 `parseVerdict` 一样容忍 ```json 围栏和前后废话；
+    /// 解析不出来返回空数组 + 一句提醒，由调用方退回用章节摘要兜底。
+    static func parseLog(_ raw: String) -> (drafts: [LogDraft], resolved: [String], warning: String?) {
+        func drafts(from array: [[String: Any]]) -> [LogDraft] {
+            array.compactMap { item in
+                let subject = (item["subject"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let summary = (item["summary"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !subject.isEmpty, !summary.isEmpty else { return nil }
+                let kind = StoryLogKind(rawValue: item["kind"] as? String ?? "") ?? .event
+                return LogDraft(kind: kind,
+                                subject: String(subject.prefix(20)),
+                                summary: String(summary.prefix(80)))
+            }
+        }
+
+        if let start = raw.firstIndex(of: "{"),
+           let end = raw.lastIndex(of: "}"),
+           start < end,
+           let data = String(raw[start...end]).data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let drafts = drafts(from: object["entries"] as? [[String: Any]] ?? [])
+            let resolved = (object["resolved"] as? [String] ?? [])
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            return (drafts, resolved, drafts.isEmpty ? "这一章没抽出场记" : nil)
+        }
+
+        // 有些模型会直接给一个数组，也认
+        if let start = raw.firstIndex(of: "["),
+           let end = raw.lastIndex(of: "]"),
+           start < end,
+           let data = String(raw[start...end]).data(using: .utf8),
+           let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            let drafts = drafts(from: array)
+            return (drafts, [], drafts.isEmpty ? "这一章没抽出场记" : nil)
+        }
+        return ([], [], "场记没给出可解析的内容")
+    }
+
     // MARK: - 写作模块：重写某一章
 
     /// 单章重写：不建议它改剧情，因为后面几十章都建立在「这一章发生过什么」上。
@@ -571,6 +730,13 @@ enum WritingPrompts {
             user += """
             【前情摘要】
             \(context.recaps)
+
+            """
+        }
+        if !context.log.isEmpty {
+            user += """
+            【场记（这一章里的事实不能和它冲突）】
+            \(context.log)
 
             """
         }
