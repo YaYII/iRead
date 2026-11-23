@@ -488,6 +488,12 @@ struct OutlineSheet: View {
     @State private var drafting = false
     @State private var draftTask: Task<Void, Never>?
     @State private var errorText: String?
+    /// 非 nil 时进入「AI 版本」预览：用户已经写了大纲，AI 的产出先不落到编辑框
+    @State private var preview: String?
+    /// 起草时用户原稿的字数，用来在预览里显示「382 字 → 1046 字」
+    @State private var baseWords = 0
+    /// 采用 AI 版之后保留一次原稿，给一步撤回
+    @State private var undoable: String?
 
     private var theme: ReadingTheme { settings.theme }
 
@@ -536,13 +542,40 @@ struct OutlineSheet: View {
                         .padding(.bottom, 6)
                 }
 
+                if let undoable {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.uturn.backward.circle")
+                            .font(.caption)
+                        Text("已换成 AI 补全版")
+                            .font(.caption)
+                        Spacer()
+                        Button("撤回我的原稿") {
+                            text = undoable
+                            self.undoable = nil
+                        }
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(theme.accent)
+                    }
+                    .foregroundStyle(theme.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+                } else if !text.isEmpty && !drafting {
+                    // 让用户先知道规则：AI 是在他写的东西上补，不是另写一份
+                    Text("再补全时，AI 只在你写的骨架上补，不会另起一套；补完先给你看，采用才替换。")
+                        .font(.caption2)
+                        .foregroundStyle(theme.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 8)
+                }
+
                 HStack(spacing: 10) {
                     Button {
                         draft()
                     } label: {
                         HStack(spacing: 5) {
                             Image(systemName: "sparkles")
-                            Text(drafting ? "起草中" : "让 AI 起草")
+                            Text(aiButtonTitle)
                         }
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(theme.accent)
@@ -582,8 +615,38 @@ struct OutlineSheet: View {
                 }
             }
         }
-        .onAppear(perform: load)
+        .onAppear {
+            load()
+            // `--outline-expand`：给已有大纲的稿子自动点一次「让 AI 补全」，用来验证不覆盖
+            if ProcessInfo.processInfo.arguments.contains("--outline-expand") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { draft() }
+            }
+        }
         .onDisappear { draftTask?.cancel() }
+        // 用户已经写了东西时，AI 的产出不落到编辑框，先在这里给他看一遍
+        .sheet(isPresented: previewShown) {
+            OutlinePreviewSheet(
+                draft: Binding(get: { preview ?? "" }, set: { preview = $0 }),
+                originalWords: baseWords,
+                drafting: drafting,
+                errorText: errorText,
+                onAdopt: { adopt() },
+                onKeep: { keepMine() }
+            )
+        }
+    }
+
+    private var aiButtonTitle: String {
+        if drafting { return text.isEmpty ? "起草中" : "补全中" }
+        return text.isEmpty ? "让 AI 起草" : "让 AI 补全"
+    }
+
+    private var previewShown: Binding<Bool> {
+        Binding(
+            get: { preview != nil },
+            // 下滑关掉等于「保留我的」；正在写就把任务停掉
+            set: { shown in if !shown { keepMine() } }
+        )
     }
 
     private func load() {
@@ -603,6 +666,17 @@ struct OutlineSheet: View {
         guard let project = writing.project(projectID) else { return }
         errorText = nil
         drafting = true
+
+        let base = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 有稿子：AI 只做补全，产出先进预览，用户点「采用」才落地。
+        // 空稿：没有可覆盖的东西，直接流进编辑器，边写边看更爽。
+        let expanding = !base.isEmpty
+        baseWords = WritingText.count(base)
+        if expanding {
+            preview = ""
+            undoable = nil
+        }
+
         let taste = store.books.filter { !$0.isComic }.prefix(6).map { "《\($0.title)》" }.joined(separator: "、")
         let opening = project.sourceBookID.flatMap { store.content(for: $0)?.chapterText(at: 0) as String? }
         let messages = WritingPrompts.outlineDraft(
@@ -611,15 +685,20 @@ struct OutlineSheet: View {
             taste: taste,
             sourceTitle: project.sourceBookTitle,
             sourceOpening: opening,
-            existing: text
+            existing: base
         )
         draftTask = Task {
             do {
                 let result = try await AIClient.shared.stream(messages: messages, temperature: 0.8) { chunk in
-                    text = chunk
+                    if expanding { preview = chunk } else { text = chunk }
                 }
-                text = result
+                if expanding { preview = result } else { text = result }
                 drafting = false
+                // `--outline-adopt`：自测用，自动点一次「采用」，方便核对落地后的正文
+                if expanding, ProcessInfo.processInfo.arguments.contains("--outline-adopt") {
+                    adopt()
+                    save()
+                }
             } catch {
                 if Task.isCancelled || error is CancellationError {
                     drafting = false
@@ -628,6 +707,129 @@ struct OutlineSheet: View {
                     drafting = false
                 }
             }
+        }
+    }
+
+    /// 用户点了「采用 AI 版」：换掉编辑框，但留一步撤回
+    private func adopt() {
+        guard let draft = preview, !draft.isEmpty else { return }
+        undoable = text
+        text = draft
+        preview = nil
+        errorText = nil
+    }
+
+    /// 用户点了「保留我的」或者下滑关掉预览
+    private func keepMine() {
+        draftTask?.cancel()
+        drafting = false
+        preview = nil
+        errorText = nil
+    }
+}
+
+// MARK: - AI 补全结果预览
+
+/// 用户自己写过东西时，AI 的版本不直接覆盖编辑框 —— 先在这里给他过一遍。
+/// 采用才替换，不采用一个字都不动。
+private struct OutlinePreviewSheet: View {
+    @Binding var draft: String
+    let originalWords: Int
+    let drafting: Bool
+    let errorText: String?
+    let onAdopt: () -> Void
+    let onKeep: () -> Void
+
+    @EnvironmentObject private var settings: ReaderSettings
+    @Environment(\.dismiss) private var dismiss
+
+    private var theme: ReadingTheme { settings.theme }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                HStack(spacing: 6) {
+                    if drafting {
+                        ProgressView().controlSize(.mini)
+                    }
+                    Text(drafting ? "正在你的草稿上补全" : "这是补全后的版本")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(theme.secondary)
+                    Spacer()
+                    if !draft.isEmpty {
+                        Text("你的 \(originalWords) 字 → \(WritingText.count(draft)) 字")
+                            .font(.caption2)
+                            .foregroundStyle(theme.secondary)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+
+                ScrollView {
+                    Text(draft.isEmpty ? "…" : draft)
+                        .font(.custom("Songti SC", size: 15))
+                        .lineSpacing(6)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
+                }
+                .background(theme.foreground.opacity(0.04))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal, 16)
+
+                if let errorText, !errorText.isEmpty {
+                    Text(errorText)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
+                }
+
+                Text("采用会替换编辑框里的内容。你的原稿会留一步，回到编辑框还能撤回。")
+                    .font(.caption2)
+                    .foregroundStyle(theme.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 10)
+
+                HStack(spacing: 10) {
+                    Button {
+                        onKeep()
+                        dismiss()
+                    } label: {
+                        Text(drafting ? "停止，保留我的" : "保留我的")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(theme.accent)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(RoundedRectangle(cornerRadius: 12).fill(theme.accent.opacity(0.12)))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        onAdopt()
+                        dismiss()
+                    } label: {
+                        Text("采用 AI 版")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(theme.background)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(RoundedRectangle(cornerRadius: 12).fill(theme.accent))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(drafting || draft.isEmpty)
+                    .opacity(drafting || draft.isEmpty ? 0.5 : 1)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 16)
+            }
+            .background(theme.background.ignoresSafeArea())
+            .navigationTitle("AI 补全的版本")
+            .navigationBarTitleDisplayMode(.inline)
         }
     }
 }
