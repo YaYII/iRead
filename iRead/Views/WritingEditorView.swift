@@ -73,8 +73,18 @@ struct WritingEditorView: View {
         panel
             .sheet(item: $editingSegment) { segment in
                 NavigationStack {
-                    ChapterEditorView(projectID: projectID, segmentID: segment.id)
-                        .environmentObject(settings)
+                    ChapterEditorView(projectID: projectID, segmentID: segment.id) {
+                        // 先收编辑器，再进流水线：它关的时候会把编辑框内容写回仓库，
+                        // 和改稿同时发生就会拿旧正文把新章盖掉。
+                        editingSegment = nil
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            if let index = writing.project(projectID)?.segments
+                                .firstIndex(where: { $0.id == segment.id }) {
+                                rewriteOne(index)
+                            }
+                        }
+                    }
+                    .environmentObject(settings)
                 }
             }
             .sheet(item: $commentingSegment) { segment in
@@ -361,38 +371,52 @@ struct WritingEditorView: View {
 
             Divider().overlay(theme.secondary.opacity(0.12))
 
-            HStack(spacing: 14) {
+            HStack(spacing: 8) {
                 Button {
                     commentingSegment = segment
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: "square.and.pencil")
+                        Image(systemName: note.isEmpty ? "square.and.pencil" : "text.bubble")
                             .font(.system(size: 10))
                         Text(note.isEmpty ? "写修改意见" : "改意见")
-                            .font(.caption2.weight(.medium))
+                            .font(.caption.weight(.medium))
                     }
                     .foregroundStyle(note.isEmpty ? theme.secondary : theme.accent)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(
+                        Capsule().fill(note.isEmpty
+                                       ? theme.foreground.opacity(0.06)
+                                       : theme.accent.opacity(0.12))
+                    )
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
-                if !note.isEmpty {
-                    Button {
-                        rewriteOne(index)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "wand.and.stars")
-                                .font(.system(size: 10))
-                            Text("按意见改这章")
-                                .font(.caption2.weight(.medium))
-                        }
-                        .foregroundStyle(theme.accent)
-                        .contentShape(Rectangle())
+                // 重写入口必须一眼看得见：之前这里是 caption2 的纯文字链接，
+                // 和「改意见」挨着、颜色一样，用户审完找不到从哪重写这一章。
+                Button {
+                    rewriteOne(index)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: note.isEmpty ? "arrow.clockwise" : "wand.and.stars")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(note.isEmpty ? "重写本章" : "按意见重写")
+                            .font(.caption.weight(.semibold))
                     }
-                    .buttonStyle(.plain)
-                    .disabled(pipeline.stage.isRunning)
-                    .opacity(pipeline.stage.isRunning ? 0.4 : 1)
+                    .foregroundStyle(note.isEmpty ? theme.secondary : theme.background)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        Capsule().fill(note.isEmpty
+                                       ? theme.foreground.opacity(0.06)
+                                       : theme.accent)
+                    )
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .disabled(pipeline.stage.isRunning)
+                .opacity(pipeline.stage.isRunning ? 0.4 : 1)
 
                 Spacer(minLength: 0)
             }
@@ -756,9 +780,13 @@ struct GenerationRequest: Identifiable {
 struct ChapterEditorView: View {
     let projectID: String
     let segmentID: String
+    /// 从编辑器里点「重写这一章」时交给列表页处理：先收起编辑器，再进流水线。
+    /// 不能在编辑器里直接跑 —— 它还攥着旧正文，改完再点「完成」会把新章覆盖回去。
+    var onRewrite: (() -> Void)? = nil
 
     @EnvironmentObject private var settings: ReaderSettings
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var writing = WritingStore.shared
 
     @State private var title = ""
     @State private var text = ""
@@ -846,7 +874,17 @@ struct ChapterEditorView: View {
             ChapterCommentSheet(projectID: projectID, segmentID: segmentID)
                 .environmentObject(settings)
         }
-        .onAppear(perform: load)
+        .safeAreaInset(edge: .bottom) { rewriteBar }
+        .onAppear {
+            load()
+            // `--editor-rewrite`：自测用，进编辑页后自动点一次底部「重写这一章」
+            if ProcessInfo.processInfo.arguments.contains("--editor-rewrite") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    flush()
+                    onRewrite?()
+                }
+            }
+        }
         .onDisappear(perform: flush)
     }
 
@@ -855,6 +893,50 @@ struct ChapterEditorView: View {
         guard let project = WritingStore.shared.project(projectID),
               let segment = project.segments.first(where: { $0.id == segmentID }) else { return false }
         return !(segment.comment ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// 读到这里发现问题，就地就能改：不用退出去、在卡片底下找那个小链接。
+    ///
+    /// 走的是列表页的流水线（`onRewrite`），不是这里自己发请求 —— 编辑器里还留着
+    /// 改动前的正文，自己跑完再点「完成」，`flush()` 会把新章整段覆盖回旧的。
+    private var rewriteBar: some View {
+        VStack(spacing: 5) {
+            Button {
+                flush()
+                onRewrite?()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: hasComment ? "wand.and.stars" : "arrow.clockwise")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(hasComment ? "按意见重写这一章" : "重写这一章")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer(minLength: 0)
+                    Text(hasComment ? "意见已存" : "先写意见更准")
+                        .font(.caption2)
+                        .opacity(0.8)
+                }
+                .foregroundStyle(hasComment ? theme.background : theme.accent)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(hasComment ? theme.accent : theme.accent.opacity(0.12))
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(onRewrite == nil)
+
+            Text(hasComment
+                 ? "只改这一章：意见点到的地方改到位，没点到的句子保留"
+                 : "整章重写：已发生的事件、人名和关系不变")
+                .font(.caption2)
+                .foregroundStyle(theme.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
+        .background(theme.background)
     }
 
     private func load() {

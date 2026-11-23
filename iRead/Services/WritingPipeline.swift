@@ -497,8 +497,11 @@ final class WritingPipeline: ObservableObject {
 
                 let parsed = WritingPrompts.splitChapter(raw, fallbackTitle: segment.title)
                 let words = WritingText.count(parsed.body)
-                // 三百字以下基本是「模型只回了个开头」或者拒答，别拿它覆盖掉整章
-                guard words >= 300 else {
+                // 三百字以下基本是「模型只回了个开头」或者拒答，别拿它覆盖掉整章。
+                // 但下限得跟着原章走：测试稿、片段本来就不到三百字，固定 300
+                // 会让它们永远改不了（实测 87 字的章改出 104 字被判「没改完」）。
+                let floor = min(300, max(60, WritingText.count(segment.text) / 2))
+                guard words >= floor else {
                     add(.warn, "第 \(index + 1) 章只改出 \(words) 字，像是没改完，保留原样")
                     continue
                 }
