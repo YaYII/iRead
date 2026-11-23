@@ -6,12 +6,18 @@ import AVFoundation
 struct iReadApp: App {
     @StateObject private var store = LibraryStore.shared
     @StateObject private var settings = ReaderSettings.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(store)
                 .environmentObject(settings)
+                .onChange(of: scenePhase) { _, phase in
+                    // 回到前台时把「屏幕常亮」重新设一遍：iOS 在挂起、控制中心、
+                    // 来电之后会清掉这个标志，不重设的话回来写一分钟屏幕又黑了
+                    if phase == .active { ScreenAwake.refresh() }
+                }
                 .onAppear {
                     settings.applyBrightness()
                     Self.runVoiceListIfRequested()

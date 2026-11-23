@@ -200,7 +200,7 @@ struct AutoWriteSheet: View {
     private var costNote: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("每章 2 次请求（写 + 审），约 \(chapters * 2) 次，预计新增 \(chapters * 2500) 字左右。")
-            Text("跑的时候会保持屏幕常亮，请留在 App 里；中途退出等于暂停在此章。")
+            Text("跑的时候会保持屏幕常亮，放着跑就行。手动锁屏或切到别的 App 会被系统挂起 —— 那一章会断，之前写好的不会丢。")
             Text(continueOnFail
                  ? "审查未过会带问题局部重写，最多再改两次；仍不过就记为草稿、标上问题，接着写下一章。"
                  : "审查未过会带问题局部重写，最多再改两次；仍不过就停在那章，不会一直重试烧额度。")
@@ -341,9 +341,7 @@ struct AutoWriteSheet: View {
 
     private var runningFooter: some View {
         VStack(spacing: 8) {
-            Text(pipeline.mode == .rewrite
-                 ? "关闭这个页面不会中断改写"
-                 : "关闭这个页面不会中断连写")
+            Text("关闭这个页面不会中断\(pipeline.mode == .rewrite ? "改写" : "连写") · 屏幕保持常亮")
                 .font(.caption2)
                 .foregroundStyle(theme.secondary)
 

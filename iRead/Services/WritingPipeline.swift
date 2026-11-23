@@ -90,8 +90,33 @@ final class WritingPipeline: ObservableObject {
     private var continueOnFail = false
     /// 本次运行里没过审的章，跑完一并列出来
     private var flagged: [String] = []
+    /// 这一轮跑的时候 App 有没有被切到后台/息屏过。
+    ///
+    /// 被系统挂起时 URLSession 会断，抛出来的是「网络连接已断开」——
+    /// 和真的断网长得一样，但对用户来说完全是两回事：一个是网络，一个是「我锁屏了」。
+    /// 记住这件事只是为了把错误说人话，不影响任何重试逻辑。
+    private var suspendedWhileRunning = false
+    /// 进后台时申请的那点额外时间（约 30 秒），够把快写完的一章落盘
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
-    private init() {}
+    private init() {
+        let center = NotificationCenter.default
+        // 单例活到进程结束，这两个观察者不用摘
+        center.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.appDidBackground() }
+        }
+        center.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.appWillForeground() }
+        }
+    }
 
     // MARK: - 对外控制
 
@@ -112,9 +137,10 @@ final class WritingPipeline: ObservableObject {
         streamText = ""
         activePlan = []
         pauseRequested = false
+        suspendedWhileRunning = false
         stage = .planning
         // 连写要跑很久，别让屏幕自己锁上
-        UIApplication.shared.isIdleTimerDisabled = true
+        ScreenAwake.begin(.pipeline)
         task = Task { [weak self] in
             await self?.loop(projectID: projectID, chapters: chapters, planFirst: planFirst)
         }
@@ -166,8 +192,9 @@ final class WritingPipeline: ObservableObject {
         streamText = ""
         activePlan = []
         pauseRequested = false
+        suspendedWhileRunning = false
         stage = .rewriting(targets[0] + 1)
-        UIApplication.shared.isIdleTimerDisabled = true
+        ScreenAwake.begin(.pipeline)
         task = Task { [weak self] in
             await self?.rewriteLoop(projectID: projectID, indexes: targets)
         }
@@ -178,7 +205,7 @@ final class WritingPipeline: ObservableObject {
         task?.cancel()
         task = nil
         pauseRequested = false
-        UIApplication.shared.isIdleTimerDisabled = false
+        ScreenAwake.end(.pipeline)
         if stage.isRunning {
             stage = .paused
             add(.warn, "已停止，当前章没有保存")
@@ -223,23 +250,23 @@ final class WritingPipeline: ObservableObject {
                 if pauseRequested {
                     pauseRequested = false
                     stage = .paused
-                    UIApplication.shared.isIdleTimerDisabled = false
+                    ScreenAwake.end(.pipeline)
                     add(.info, "已暂停：写完 \(completed) 章，后面接着写就行")
                     return
                 }
             }
 
-            UIApplication.shared.isIdleTimerDisabled = false
+            ScreenAwake.end(.pipeline)
             stage = .finished
             add(.ok, "全部写完：本次 \(completed) 章，\(WritingStore.shared.project(projectID)?.wordCount ?? 0) 字")
             if !flagged.isEmpty {
                 add(.warn, "\(flagged.count) 章没过审、已标在章节卡上：\(flagged.joined(separator: "、"))")
             }
         } catch is CancellationError {
-            UIApplication.shared.isIdleTimerDisabled = false
+            ScreenAwake.end(.pipeline)
             if stage.isRunning { stage = .paused }
         } catch {
-            fail(error.localizedDescription)
+            fail(Self.friendly(error, suspended: suspendedWhileRunning))
         }
     }
 
@@ -372,6 +399,8 @@ final class WritingPipeline: ObservableObject {
         }
         WritingStore.shared.update(latest)
         completed += 1
+        // 这一章已经落盘了，之后就算再出岔子也不是「被挂起吃掉的一章」
+        suspendedWhileRunning = false
         streamText = ""
 
         if passed {
@@ -389,7 +418,7 @@ final class WritingPipeline: ObservableObject {
             }
             stage = .failed("第 \(number) 章没过审，停在这里")
             add(.warn, "改一下大纲或这一章目标，再点「从这里重写」")
-            UIApplication.shared.isIdleTimerDisabled = false
+            ScreenAwake.end(.pipeline)
             return false
         }
     }
@@ -489,6 +518,7 @@ final class WritingPipeline: ObservableObject {
 
                 done += 1
                 completed += 1
+                suspendedWhileRunning = false
                 streamText = ""
                 add(.ok, "第 \(index + 1) 章改好了 · \(words) 字")
 
@@ -501,24 +531,24 @@ final class WritingPipeline: ObservableObject {
 
                 if pauseRequested {
                     pauseRequested = false
-                    UIApplication.shared.isIdleTimerDisabled = false
+                    ScreenAwake.end(.pipeline)
                     stage = .paused
                     add(.info, "已暂停：改完 \(done) 章，剩下的意见还留着，下次接着点重写")
                     return
                 }
             }
 
-            UIApplication.shared.isIdleTimerDisabled = false
+            ScreenAwake.end(.pipeline)
             if done < indexes.count {
                 add(.warn, "\(indexes.count - done) 章没改（见上面的原因），意见还留着")
             }
             stage = .finished
             add(.ok, "按意见改完 \(done) 章")
         } catch is CancellationError {
-            UIApplication.shared.isIdleTimerDisabled = false
+            ScreenAwake.end(.pipeline)
             if stage.isRunning { stage = .paused }
         } catch {
-            fail(error.localizedDescription)
+            fail(Self.friendly(error, suspended: suspendedWhileRunning))
         }
     }
 
@@ -574,10 +604,63 @@ final class WritingPipeline: ObservableObject {
         return flat.count > limit ? String(flat.prefix(limit)) + "…" : flat
     }
 
+    /// 被挂起导致的断流，报错和真断网一模一样（「网络连接已断开」）。
+    /// 但对用户是两件事：一个是「我锁屏了，点回来接着写」，一个是「网络有问题，去查一下」。
+    private static func friendly(_ error: Error, suspended: Bool) -> String {
+        guard suspended else { return error.localizedDescription }
+        return "App 被系统挂起过（息屏或切走），这一章没写完；已经写好的都在，点继续接着写"
+    }
+
     private func fail(_ reason: String) {
-        UIApplication.shared.isIdleTimerDisabled = false
+        ScreenAwake.end(.pipeline)
+        endExtendedTime()
         stage = .failed(reason)
         add(.error, reason)
+    }
+
+    // MARK: - 前后台
+
+    /// 切到后台（含息屏）时：说明清楚，并争取三十秒把手上这一章写完。
+    ///
+    /// 屏幕常亮只能防「自动息屏」，防不住手动按侧边键锁屏，也防不住用户切到别的 App。
+    /// 那种情况下 iOS 会冻结进程、掐断连接，能做的只有两件事：
+    /// 用 `beginBackgroundTask` 换一小段额外时间，和把原因说人话。
+    private func appDidBackground() {
+        guard stage.isRunning else { return }
+        suspendedWhileRunning = true
+        add(.warn, "App 到后台了：iOS 会暂停生成，正在写的第 \(runningNumber) 章可能没写完")
+        beginExtendedTime()
+    }
+
+    private func appWillForeground() {
+        endExtendedTime()
+        // 被挂起一次之后 iOS 会清掉「屏幕常亮」，不重设等于开关失效
+        if stage.isRunning {
+            ScreenAwake.begin(.pipeline)
+            add(.info, "回到前台，接着跑")
+        }
+    }
+
+    /// 日志里那个「第几章」，只用于措辞
+    private var runningNumber: Int {
+        switch stage {
+        case .writing(let n), .reviewing(let n), .repairing(let n), .rewriting(let n): return n
+        default: return max(1, completed + 1)
+        }
+    }
+
+    private func beginExtendedTime() {
+        endExtendedTime()
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "iRead.writing") { [weak self] in
+            // 系统要收回时间了：先注销，否则应用会被强杀
+            Task { @MainActor in self?.endExtendedTime() }
+        }
+    }
+
+    private func endExtendedTime() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
     }
 
     /// 最近两章正文、合计不超过 6000 字：再往前对文风的帮助很小，只会烧 token

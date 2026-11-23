@@ -1129,11 +1129,17 @@ struct GenerationSheet: View {
                 }
             }
             .onAppear {
+                // 单章生成也得常亮：这一章要写一两分钟，屏幕一黑 App 就被挂起，
+                // 生成断在半路 —— 用户看到的是「AI 不写了」，其实是系统把进程冻住了
+                ScreenAwake.begin(.generation)
                 guard !started else { return }
                 started = true
                 start()
             }
-            .onDisappear { task?.cancel() }
+            .onDisappear {
+                task?.cancel()
+                ScreenAwake.end(.generation)
+            }
         }
         .interactiveDismissDisabled(phase == .running)
     }

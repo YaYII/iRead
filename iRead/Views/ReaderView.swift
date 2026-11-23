@@ -109,7 +109,7 @@ struct ReaderView: View {
             if on, listening.bookID == bookID { enterFollowMode() }
         }
         .onDisappear {
-            UIApplication.shared.isIdleTimerDisabled = false
+            ScreenAwake.end(.reading)
             persistScrollProgress(
                 chapter: scrollProxy.chapter,
                 charIndex: scrollProxy.characterIndex,
@@ -124,7 +124,7 @@ struct ReaderView: View {
         // 更不该动朗读进度 —— 以前监听 objectWillChange 时会把 scrollSpeechOffset
         // 覆盖成当前屏位置，结果就是「一调字号，朗读从眼前这段重读」。
         .onChange(of: settings.keepScreenOn) { _, on in
-            UIApplication.shared.isIdleTimerDisabled = on
+            ScreenAwake.set(.reading, active: on)
         }
         .onChange(of: layoutToken) { _, _ in
             if scrollProxy.hasRendered {
@@ -803,7 +803,9 @@ struct ReaderView: View {
         // 如果打开的就是正在听的那本，把当前朗读句贴回来
         syncListeningHighlight()
         settings.applyBrightness()
-        UIApplication.shared.isIdleTimerDisabled = settings.keepScreenOn
+        // 阅读页只是「常亮」的一个使用者，不能直接改这个全局开关：
+        // 连写还在后台跑的时候，这里一设 false 就会把流水线的常亮顶掉
+        ScreenAwake.set(.reading, active: settings.keepScreenOn)
         let args = ProcessInfo.processInfo.arguments
         if args.contains("--scroll-mid") {
             scrollAnchorChar = Int(Double(chapterLength) * 0.45)
