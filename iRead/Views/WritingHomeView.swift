@@ -314,7 +314,7 @@ struct NewWritingSheet: View {
         mode == .original || sourceBook != nil
     }
 
-    private let suggestions = ["都市悬疑", "古风志怪", "修仙升级", "甜宠日常", "末日求生", "职场群像"]
+    private let suggestions = ["东方玄幻", "修仙升级", "都市悬疑", "古风志怪", "甜宠日常", "末日求生", "职场群像"]
 
     var body: some View {
         NavigationStack {

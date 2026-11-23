@@ -677,7 +677,14 @@ struct OutlineSheet: View {
             undoable = nil
         }
 
-        let taste = store.books.filter { !$0.isComic }.prefix(6).map { "《\($0.title)》" }.joined(separator: "、")
+        // 口味靠书架：在看的排前面，多给几本 —— 只给 6 本时玄幻/仙侠经常挤不进去，
+        // 模型就按默认的都市路子写了。书名只用来判类型，正文一概不发。
+        let taste = store.books
+            .filter { !$0.isComic }
+            .sorted { ($0.lastReadAt ?? $0.addedAt) > ($1.lastReadAt ?? $1.addedAt) }
+            .prefix(12)
+            .map { "《\($0.title)》" }
+            .joined(separator: "、")
         let opening = project.sourceBookID.flatMap { store.content(for: $0)?.chapterText(at: 0) as String? }
         let messages = WritingPrompts.outlineDraft(
             title: project.title,
@@ -694,9 +701,9 @@ struct OutlineSheet: View {
                 }
                 if expanding { preview = result } else { text = result }
                 drafting = false
-                // `--outline-adopt`：自测用，自动点一次「采用」，方便核对落地后的正文
-                if expanding, ProcessInfo.processInfo.arguments.contains("--outline-adopt") {
-                    adopt()
+                // `--outline-adopt`：自测用，自动点一次「采用」（空稿则直接存），方便核对落地后的正文
+                if ProcessInfo.processInfo.arguments.contains("--outline-adopt") {
+                    if expanding { adopt() }
                     save()
                 }
             } catch {
