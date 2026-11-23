@@ -5,7 +5,8 @@ import Combine
 
 /// 全局音乐播放器。
 ///
-/// 和听书组件并列存在，但同一时刻只该有一个在出声：开音乐时先停朗读。
+/// 它和听书共用一套播放体系（`PlaybackCenter`）：同一时刻只有一档出声，
+/// 切换时另一方只暂停、不销毁，所以听 A 听 B 可以随时来回。
 /// 播放在线地址的同时把文件存到 `MusicStore`，下次直接读本地。
 final class MusicPlayer: ObservableObject {
     static let shared = MusicPlayer()
@@ -17,9 +18,6 @@ final class MusicPlayer: ObservableObject {
     @Published private(set) var duration: Double = 0
     @Published var shuffle = false
     @Published var repeatMode: MusicRepeatMode = .all
-    /// 界面请求：从搜索结果/书架点歌后，由根视图统一弹出播放器。
-    /// 播放器是全局单例，弹窗不能挂在某个随时会被销毁的子视图上。
-    @Published var wantsPlayerSheet = false
 
     private var player: AVPlayer?
     private var queue: [MusicTrack] = []
@@ -37,9 +35,8 @@ final class MusicPlayer: ObservableObject {
 
     /// 播放一首歌。`queue` 传当前列表，用于上一首/下一首。
     func play(_ item: MusicTrack, queue list: [MusicTrack]? = nil) {
-        if ListeningCenter.shared.isPlayingSomething {
-            ListeningCenter.shared.stop()
-        }
+        // 播放体系交给音乐：听书只暂停，书和章节都留着，随时能切回去
+        PlaybackCenter.shared.handOver(to: .music)
 
         let stored = MusicStore.shared.remember(item)
         track = stored
@@ -69,6 +66,7 @@ final class MusicPlayer: ObservableObject {
 
     func resume() {
         wantsPlayWhenReady = true
+        PlaybackCenter.shared.handOver(to: .music)
         guard let player else {
             // 还在下载：下完会自动起播，这里只翻转意图
             return
@@ -98,7 +96,11 @@ final class MusicPlayer: ObservableObject {
         duration = 0
         queue = []
         index = 0
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        if PlaybackCenter.shared.owns(.music) {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        }
+        // 关掉音乐后如果书还在，播放体系交回听书（迷你条跟着换过去）
+        PlaybackCenter.shared.didStop(.music)
     }
 
     func next(auto: Bool = false) {
@@ -298,23 +300,30 @@ final class MusicPlayer: ObservableObject {
         remoteConfigured = true
 
         let center = MPRemoteCommandCenter.shared()
+        // 听书那边也注册了同名命令：只有当前这一档能响应，
+        // 否则锁屏按一次暂停会把两个播放器都停掉/都叫醒。
         center.playCommand.addTarget { [weak self] _ in
+            guard PlaybackCenter.shared.owns(.music) else { return .success }
             self?.resume()
             return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
+            guard PlaybackCenter.shared.owns(.music) else { return .success }
             self?.pause()
             return .success
         }
         center.nextTrackCommand.addTarget { [weak self] _ in
+            guard PlaybackCenter.shared.owns(.music) else { return .success }
             self?.next()
             return .success
         }
         center.previousTrackCommand.addTarget { [weak self] _ in
+            guard PlaybackCenter.shared.owns(.music) else { return .success }
             self?.previous()
             return .success
         }
         center.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard PlaybackCenter.shared.owns(.music) else { return .success }
             guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             self?.seek(to: event.positionTime)
             return .success
@@ -322,6 +331,8 @@ final class MusicPlayer: ObservableObject {
     }
 
     private func updateNowPlaying() {
+        // 锁屏信息只由当前这一档写：听书切到音乐会互相覆盖，出现「歌名 + 书名」的错乱
+        guard PlaybackCenter.shared.owns(.music) else { return }
         guard let track else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return

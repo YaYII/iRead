@@ -24,14 +24,13 @@ struct ContentView: View {
     @EnvironmentObject private var settings: ReaderSettings
     /// 听书是全局组件，书架只负责发起/收起，不承载播放状态
     @ObservedObject private var listening = ListeningCenter.shared
-    /// 音乐也是全局播放：切标签、进阅读器都不该停
-    @ObservedObject private var music = MusicPlayer.shared
+    /// 播放中枢：听书与音乐共用一套播放体系，界面只认「现在是谁在播」
+    @ObservedObject private var playback = PlaybackCenter.shared
     /// 书架当前分类：只有「电子书」下才有可听的当前书
     @ObservedObject private var shelfMode = ShelfMode.shared
 
     @State private var selection = 0
     @State private var activeBook: Book?
-    @State private var showPlayer = false
     @State private var showWiFiTransfer = false
     @State private var showDownloads = false
     @State private var showSettings = false
@@ -53,7 +52,7 @@ struct ContentView: View {
                 onListenBook: { book in
                     // 只把书装进听书组件并打开界面，不在这里出声
                     listening.prepare(bookID: book.id)
-                    showPlayer = true
+                    playback.openPlayer()
                 },
                 onOpenSettings: {
                     showSettings = true
@@ -109,16 +108,17 @@ struct ContentView: View {
         }
         .tint(settings.theme.accent)
         .preferredColorScheme(settings.theme.colorScheme)
-        // 音乐条优先于「听」球：两者不会同时出声，开音乐时朗读已停。
+        // 一条悬浮条管两种媒体：在播就显示当前这一档（听书 / 音乐），
+        // 都没在播才显示「听」球。不再有「音乐条把听书球挤掉」这回事。
         // 用 overlay 而非 safeAreaInset —— 悬浮条不该把书架列表往上顶出一块空白。
         .overlay(alignment: .bottom) {
-            if music.isActive {
-                MusicMiniBar()
-                    .environmentObject(settings)
-                    .padding(.bottom, 62)
-            } else if showsListeningDock {
-                ListeningFloatingDock(onOpen: openPlayer, bottomInset: 72)
-                    .environmentObject(settings)
+            if playback.kind != .none || showsListeningDock {
+                NowPlayingDock(
+                    showsEntry: playback.kind == .none && showsListeningDock,
+                    bottomInset: 62,
+                    onOpen: openPlayer
+                )
+                .environmentObject(settings)
             }
         }
         .fullScreenCover(item: $activeBook) { book in
@@ -133,14 +133,13 @@ struct ContentView: View {
                     .environmentObject(settings)
             }
         }
-        .sheet(isPresented: $showPlayer) {
-            ListeningPlayerView()
+        // 统一播放器：挂在根视图上。
+        // 内容按「当前播的是书还是音乐」切换，入口只有一个：
+        // 搜索结果、书架、迷你条都只是把 `wantsPlayer` 置 true。
+        .sheet(isPresented: $playback.wantsPlayer) {
+            NowPlayingView()
                 .environmentObject(store)
                 .environmentObject(settings)
-        }
-        // 音乐播放器挂根视图：搜索结果、书架、迷你条都只是把 wantsPlayerSheet 置 true
-        .sheet(isPresented: $music.wantsPlayerSheet) {
-            MusicPlayerView()
         }
         .sheet(isPresented: $showWiFiTransfer) {
             WiFiTransferView()
@@ -165,6 +164,10 @@ struct ContentView: View {
             // --bookdash-selftest：绘本链路（书目→详情→内页→下第一张图）自检
             if args.contains("--bookdash-selftest") {
                 Task { await PictureBookSource.selfTest() }
+            }
+            // --playback-selftest：验证「听书与音乐同一个播放体系」
+            if args.contains("--playback-selftest") {
+                runPlaybackSelftest()
             }
             // --writing：直接切到写作页
             if args.contains("--writing") { selection = 2 }
@@ -231,7 +234,15 @@ struct ContentView: View {
                     if let book = store.books.first {
                         listening.prepare(bookID: book.id)
                     }
-                    showPlayer = true
+                    playback.openPlayer()
+                }
+            } else if args.contains("--debug-reader-text") {
+                // 仅供自测：打开一本**有正文**的文字书（跳过绘本/漫画）。
+                // 滚动、听书跟随这些自测都只能在文字书上跑。
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    activeBook = store.books.first {
+                        !$0.isComic && store.content(for: $0.id) != nil
+                    }
                 }
             } else if args.contains("--debug-reader") {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -252,9 +263,9 @@ struct ContentView: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     guard let book = store.books.first else { return }
                     listening.resume(bookID: book.id)
-                    showPlayer = true
+                    playback.openPlayer()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                        showPlayer = false
+                        playback.wantsPlayer = false
                         listening.requestFollowAlong(bookID: book.id)
                     }
                 }
@@ -267,11 +278,11 @@ struct ContentView: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
                     guard let book = store.books.first else { return }
                     listening.resume(bookID: book.id)
-                    showPlayer = true
+                    playback.openPlayer()
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) {
                     guard let book = store.books.first else { return }
-                    showPlayer = false
+                    playback.wantsPlayer = false
                     listening.requestFollowAlong(bookID: book.id)
                 }
             }
@@ -313,20 +324,71 @@ struct ContentView: View {
     /// - 还在书架 / 设置页 → 才把正在听的那本打开成阅读页
     private func openReaderFollowing(book: Book) {
         let alreadyReading = activeBook != nil
-        showPlayer = false
+        playback.wantsPlayer = false
         guard !alreadyReading else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
             activeBook = book
         }
     }
 
-    /// 悬浮「听」球的唯一入口：只打开听书界面，播放由界面里的按钮决定。
-    /// 没有选中过书时先预选一本，让界面有东西可显示（依然不发声）。
+    /// 统一悬浮条的唯一入口：只打开播放器，播放由里面的按钮决定。
+    /// 什么都没有时先预选一本，让界面有东西可显示（依然不发声）；
+    /// 已经在听音乐就不要再塞一本书进去，否则点音乐条会跳到听书界面。
     private func openPlayer() {
-        if !listening.isPlayingSomething, let book = store.books.first {
+        if playback.kind == .none, let book = store.books.first {
             listening.prepare(bookID: book.id)
         }
-        showPlayer = true
+        playback.openPlayer()
+    }
+
+    /// 仅供自测：验证「听书与音乐是同一个播放体系」。
+    ///
+    /// 顺序：听书 → 开音乐（书只应被暂停、书还在）→ 切回听书（音乐只应被暂停、曲目还在）。
+    /// 任何一步出现 `bookID=-` 或 `musicTrack=-`，都说明又退回了「谁出声谁把对方清空」。
+    private func runPlaybackSelftest() {
+        Task { @MainActor in
+            func snapshot(_ tag: String) {
+                NSLog("[Playback] %@ kind=%@ musicPlaying=%d musicTrack=%@ bookActive=%d bookPaused=%d bookID=%@",
+                      tag,
+                      PlaybackCenter.shared.kind.rawValue,
+                      MusicPlayer.shared.isPlaying ? 1 : 0,
+                      MusicPlayer.shared.track?.title ?? "-",
+                      ListeningCenter.shared.isActive ? 1 : 0,
+                      ListeningCenter.shared.isPaused ? 1 : 0,
+                      ListeningCenter.shared.bookID ?? "-")
+            }
+
+            // 绘本/漫画没有可朗读的正文，挑一本真有文字的
+            guard let book = store.books.first(where: { !$0.isComic && store.content(for: $0.id) != nil }) else {
+                NSLog("[Playback] no book")
+                return
+            }
+            ListeningCenter.shared.resume(bookID: book.id)
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            snapshot("book-started")
+
+            guard let track = MusicStore.shared.tracks.first else {
+                snapshot("no-music")
+                return
+            }
+            MusicPlayer.shared.play(track, queue: MusicStore.shared.tracks)
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            snapshot("music-started")
+
+            PlaybackCenter.shared.resumeOther()
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            snapshot("back-to-book")
+
+            // 可选：打开统一播放器，再点一次底部「接着听音乐」，
+            // 验证全屏播放器是**原地换形态**，不是叠第二个弹窗
+            guard ProcessInfo.processInfo.arguments.contains("--playback-open") else { return }
+            PlaybackCenter.shared.openPlayer()
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            snapshot("player-book")
+            PlaybackCenter.shared.resumeOther()
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            snapshot("player-music")
+        }
     }
 
     /// 仅供自测：用启动参数配好 AI 服务，省掉在模拟器里手打（本来也打不了字）

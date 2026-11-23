@@ -22,8 +22,9 @@ struct ReaderView: View {
     @State private var showChapters = false
     @State private var showSettings = false
     @State private var showAI = false
-    @State private var showPlayer = false
     @State private var loadFailed = false
+    /// 播放中枢：阅读页底部那条悬浮条同样是全局的，听歌时显示歌、听书时显示书
+    @ObservedObject private var playback = PlaybackCenter.shared
 
     @StateObject private var scrollProxy = ScrollProxy()
     /// 重建滚动视图时使用的锚点（章 + 章内字符）
@@ -102,6 +103,16 @@ struct ReaderView: View {
                 try? await Task.sleep(nanoseconds: 800_000_000)
                 showAI = true
             }
+            // 仅供自测：打开书后自动开始听书（从当前视口开始），
+            // 用来验证「听书跟随 / 手动滑开后不被拽回」这条链路
+            if args.contains("--listen") {
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                listening.resume(
+                    bookID: bookID,
+                    fallbackChapter: chapterIndex,
+                    fallbackChar: max(0, scrollProxy.characterIndex)
+                )
+            }
         }
         // 阅读器已经开着时，「边听边读」只收起听书界面；
         // 这里让**当前这一页**原地进入跟读，不重建 fullScreenCover。
@@ -178,8 +189,8 @@ struct ReaderView: View {
                 .environmentObject(settings)
             }
         }
-        .sheet(isPresented: $showPlayer) {
-            ListeningPlayerView()
+        .sheet(isPresented: $playback.wantsPlayer) {
+            NowPlayingView()
                 .environmentObject(store)
                 .environmentObject(settings)
         }
@@ -244,9 +255,10 @@ struct ReaderView: View {
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                             .zIndex(3)
                     } else {
-                        ListeningFloatingDock(
-                            onOpen: openPlayer,
-                            bottomInset: showChrome ? 78 : 24
+                        NowPlayingDock(
+                            showsEntry: playback.kind == .none,
+                            bottomInset: showChrome ? 78 : 24,
+                            onOpen: openPlayer
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -286,6 +298,33 @@ struct ReaderView: View {
                     try? await Task.sleep(nanoseconds: 4_000_000_000)
                     scrollProxy.simulateUserScroll(by: 600)
                 }
+                // 仅供自测：朗读跟随的控制权移交（不依赖 TTS 进度回调，确定性判据）
+                // 一：用户滑开后，朗读游标继续推进，视口必须一动不动；
+                // 二：把跟随权收回来之后，同一句必须还能把视口带过去。
+                if ProcessInfo.processInfo.arguments.contains("--follow-selftest") {
+                    try? await Task.sleep(nanoseconds: 2_500_000_000)
+                    scrollProxy.simulateUserScroll(by: 900)
+                    try? await Task.sleep(nanoseconds: 700_000_000)
+                    let away = scrollProxy.debugState()
+                    let awayPos = scrollProxy.debugPosition()
+                    let followAway = scrollProxy.isFollowingSpeech
+
+                    // 朗读继续往下念：这一步不许改动视口
+                    scrollProxy.ensureVisible(chapter: awayPos.chapter, char: 0)
+                    try? await Task.sleep(nanoseconds: 700_000_000)
+                    let held = scrollProxy.debugState()
+                    let drift = Int((held.relative - away.relative).rounded())
+                    print("[Follow] away follow=\(followAway) drift=\(drift) verdict=\(drift == 0 ? "ok" : "PULLED")")
+
+                    // 收回跟随权：同一句必须能带动视口
+                    scrollProxy.resumeFollowing()
+                    scrollProxy.ensureVisible(chapter: awayPos.chapter, char: 0)
+                    try? await Task.sleep(nanoseconds: 1_100_000_000)
+                    let followed = scrollProxy.debugState()
+                    let move = Int((followed.relative - held.relative).rounded())
+                    print("[Follow] resumed follow=\(scrollProxy.isFollowingSpeech) move=\(move) verdict=\(move != 0 ? "ok" : "STUCK")")
+                    print("[Follow] done")
+                }
                 // 仅供自测：滑开后再自动点一次「回到朗读位置」，验证能回到朗读处
                 if ProcessInfo.processInfo.arguments.contains("--return-to-speech") {
                     try? await Task.sleep(nanoseconds: 7_000_000_000)
@@ -320,6 +359,14 @@ struct ReaderView: View {
                     print("[Reader] font-bump \(settings.fontSize) → \(settings.fontSize + 2)")
                     #endif
                     settings.fontSize += 2
+                }
+                // 仅供自测：连续快速滑动。
+                // 判据是 offset 每一步都严格等于上一步 + dy：
+                // 只要出现「跳回」「少一截」，就是窗口裁剪把 contentSize 缩了却没补 offset，
+                // 也就是用户说的「快速滑动会回弹」。
+                if ProcessInfo.processInfo.arguments.contains("--scroll-selftest") {
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    await runScrollSelftest()
                 }
             }
         }
@@ -655,11 +702,11 @@ struct ReaderView: View {
         syncListeningHighlight()
     }
 
-    /// 所有听书入口（顶部耳机、右下悬浮球）都只打开听书界面，不在这里出声。
-    /// 没有选中过书时，把当前这本装进听书组件作预选（依然不播）；
-    /// 已经在听别的书时一律不打断，换书由播放器内部的「选书」完成。
+    /// 所有播放入口（顶部耳机、右下悬浮条）都只打开播放器，不在这里出声。
+    /// 什么都没有时把当前这本装进听书组件作预选（依然不播）；
+    /// 已经在听别的书、或正在听音乐时一律不打断，换内容由播放器内部完成。
     private func openPlayer() {
-        if !listening.isPlayingSomething {
+        if playback.kind == .none {
             let last = max(0, (content?.chapterCount ?? 1) - 1)
             let chapter = min(max(0, chapterIndex), last)
             listening.prepare(
@@ -668,7 +715,7 @@ struct ReaderView: View {
                 fallbackChar: max(0, scrollProxy.characterIndex)
             )
         }
-        showPlayer = true
+        playback.openPlayer()
     }
 
     /// 高亮只在「正在听的就是这本书」时贴回正文。
@@ -784,8 +831,47 @@ struct ReaderView: View {
         )
     }
 
-    private func prepare() {
-        guard let loaded = store.content(for: bookID) else {
+    #if DEBUG
+    /// 连续快速下滑、再快速上滑，检查视口有没有被窗口整理拽回去。
+    ///
+    /// 判据是「视口顶部落在哪一章哪个字」是否逆向变化：
+    /// 下滑时只能往后走，上滑时只能往前走。逆向就是用户看到的回弹。
+    private func runScrollSelftest() async {
+        var last = scrollProxy.debugPosition()
+        var jumps = 0
+        for round in 0..<2 {
+            let dy: CGFloat = round == 0 ? 900 : -900
+            for step in 0..<18 {
+                scrollProxy.simulateUserScroll(by: dy)
+                // 每 4 步停一下，让「静止后整理窗口」的逻辑有机会跑
+                let pause: UInt64 = step % 4 == 3 ? 520_000_000 : 60_000_000
+                try? await Task.sleep(nanoseconds: pause)
+                let state = scrollProxy.debugState()
+                let pos = scrollProxy.debugPosition()
+                let moved: Int
+                if pos.chapter != last.chapter {
+                    moved = pos.chapter > last.chapter ? 1 : -1
+                } else {
+                    moved = pos.char == last.char ? 0 : (pos.char > last.char ? 1 : -1)
+                }
+                let reversed = (dy > 0 && moved < 0) || (dy < 0 && moved > 0)
+                if reversed { jumps += 1 }
+                print(String(
+                    format: "[Scroll] %@ step=%d ch=%d char=%d y=%.0f d=%.0f size=%.0f win=%@ %@",
+                    round == 0 ? "down" : "up", step, pos.chapter, pos.char,
+                    state.offset, state.relative, state.height,
+                    state.range.map { "\($0.lowerBound)-\($0.upperBound)" } ?? "-",
+                    reversed ? "BOUNCE" : "ok"
+                ))
+                last = pos
+            }
+            try? await Task.sleep(nanoseconds: 700_000_000)
+        }
+        print("[Scroll] selftest done bounces=\(jumps)")
+    }
+    #endif
+
+    private func prepare() {        guard let loaded = store.content(for: bookID) else {
             loadFailed = true
             return
         }

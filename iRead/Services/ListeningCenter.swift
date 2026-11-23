@@ -155,6 +155,9 @@ final class ListeningCenter: ObservableObject {
     func prepare(bookID id: String, fallbackChapter: Int? = nil, fallbackChar: Int? = nil) {
         guard let content = store.content(for: id), content.chapterCount > 0,
               let book = store.book(id) else { return }
+        // 点「听这本书」就是这个意图：播放体系交给书。
+        // 音乐只会被暂停，曲目和进度都留着，随时能从播放器底部切回去。
+        PlaybackCenter.shared.handOver(to: .book)
         // 已经选中的就是这本：别打断正在播的声音，也别把位置拨回去
         if bookID == id { return }
 
@@ -294,6 +297,8 @@ final class ListeningCenter: ObservableObject {
         content = nil
         endFollowAlong()
         updateNowPlaying()
+        // 书退出了，但音乐可能还留着：播放体系交回音乐
+        PlaybackCenter.shared.didStop(.book)
     }
 
     // MARK: - 章节
@@ -342,6 +347,8 @@ final class ListeningCenter: ObservableObject {
 
     private func begin(chapter: Int, char: Int, snapToParagraph: Bool) {
         guard let content, content.chapters.indices.contains(chapter), let id = bookID else { return }
+        // 播放体系交给听书：音乐只暂停，曲目和进度都留着
+        PlaybackCenter.shared.handOver(to: .book)
         let text = content.chapterText(at: chapter)
         let start = snapToParagraph
             ? Self.paragraphStart(in: text, char: char)
@@ -434,6 +441,7 @@ final class ListeningCenter: ObservableObject {
         bookID = nil
         endFollowAlong()
         updateNowPlaying()
+        PlaybackCenter.shared.didStop(.book)
     }
 
     private func halt() {
@@ -546,23 +554,30 @@ final class ListeningCenter: ObservableObject {
 
     private func configureRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
+        // 音乐那边注册了同一批命令：只有当前这一档能响应，
+        // 否则锁屏按一次暂停会把两边一起停掉。
         center.playCommand.addTarget { [weak self] _ in
+            guard PlaybackCenter.shared.owns(.book) else { return .success }
             DispatchQueue.main.async { self?.resumePlayback() }
             return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
+            guard PlaybackCenter.shared.owns(.book) else { return .success }
             DispatchQueue.main.async { self?.pause() }
             return .success
         }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard PlaybackCenter.shared.owns(.book) else { return .success }
             DispatchQueue.main.async { self?.toggle() }
             return .success
         }
         center.nextTrackCommand.addTarget { [weak self] _ in
+            guard PlaybackCenter.shared.owns(.book) else { return .success }
             DispatchQueue.main.async { self?.nextChapter() }
             return .success
         }
         center.previousTrackCommand.addTarget { [weak self] _ in
+            guard PlaybackCenter.shared.owns(.book) else { return .success }
             DispatchQueue.main.async { self?.previousChapter() }
             return .success
         }
@@ -572,6 +587,8 @@ final class ListeningCenter: ObservableObject {
     /// 不填 duration 避免出现一条乱跳的进度条。
     private func updateNowPlaying() {
         let center = MPNowPlayingInfoCenter.default()
+        // 锁屏信息只由当前这一档写：两档都写会互相覆盖
+        guard PlaybackCenter.shared.owns(.book) else { return }
         guard let id = bookID, !id.isEmpty else {
             center.nowPlayingInfo = nil
             MPRemoteCommandCenter.shared().nextTrackCommand.isEnabled = false

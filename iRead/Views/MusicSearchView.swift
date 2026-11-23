@@ -215,7 +215,7 @@ struct MusicSearchView: View {
         return Button {
             searchFocused = false
             player.play(track, queue: queue)
-            player.wantsPlayerSheet = true
+            PlaybackCenter.shared.openPlayer()
         } label: {
             HStack(spacing: 12) {
                 MusicCover(track: track, size: 52, showsNote: true)
@@ -355,7 +355,7 @@ struct MusicSearchView: View {
                 self.player.play(first, queue: list)
                 // 截图用：自检时也想看看全屏播放器的真实排版
                 if ProcessInfo.processInfo.arguments.contains("--music-open-player") {
-                    self.player.wantsPlayerSheet = true
+                    PlaybackCenter.shared.openPlayer()
                 }
             }
 

@@ -46,7 +46,7 @@ struct MusicShelfGrid: View {
         let isCurrent = player.track?.id == track.id
         return Button {
             player.play(track, queue: tracks)
-            player.wantsPlayerSheet = true
+            PlaybackCenter.shared.openPlayer()
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 ZStack(alignment: .bottomLeading) {

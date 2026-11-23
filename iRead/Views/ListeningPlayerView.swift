@@ -1,151 +1,5 @@
 import SwiftUI
 
-/// 听书悬浮组件：右下角同一个位置，「听」与「播放」互斥显示。
-///
-/// 没在播（含刚选好书、待播放）→ 只显示「听」球，点开听书界面；
-/// 一旦出声 / 暂停中 → 「听」隐藏，原地换成播放控制胶囊，点胶囊主体同样能进界面。
-/// 两者永远不同时出现，位置也不跳。
-struct ListeningFloatingDock: View {
-    var onOpen: () -> Void
-    /// 距容器底部的距离：书架要避开标签栏，阅读页要避开底部工具栏
-    var bottomInset: CGFloat = 12
-
-    @ObservedObject private var listening = ListeningCenter.shared
-
-    var body: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            Spacer(minLength: 0)
-            if listening.isActive {
-                ListeningBubble(onOpen: onOpen)
-                    .frame(maxWidth: 244)
-                    .transition(.scale(scale: 0.86, anchor: .bottomTrailing).combined(with: .opacity))
-            } else {
-                ListeningEntryButton(onOpen: onOpen)
-                    .transition(.scale(scale: 0.86, anchor: .bottomTrailing).combined(with: .opacity))
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.bottom, bottomInset)
-        .animation(.spring(response: 0.28, dampingFraction: 0.82), value: listening.isActive)
-    }
-}
-
-/// 右下角的「听」悬浮球：永远在，点开听书组件，不会直接出声
-private struct ListeningEntryButton: View {
-    var onOpen: () -> Void
-
-    var body: some View {
-        Button(action: onOpen) {
-            ZStack {
-                Circle()
-                    .fill(Color(white: 0.24).opacity(0.92))
-                Text("听")
-                    .font(.system(size: 21, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 54, height: 54)
-            .shadow(color: .black.opacity(0.22), radius: 10, y: 4)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("打开听书")
-    }
-}
-
-/// 左下角的悬浮胶囊：圆形封面 + 状态 + 播放/暂停 + 关闭
-private struct ListeningBubble: View {
-    var onOpen: () -> Void
-
-    @ObservedObject private var listening = ListeningCenter.shared
-
-    var body: some View {
-        HStack(spacing: 9) {
-            ListeningDisc(hue: listening.coverHue, title: listening.bookTitle, size: 34)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(listening.bookTitle)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                Text(subtitle)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.white.opacity(0.65))
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Button {
-                listening.toggle()
-            } label: {
-                Image(systemName: playIcon)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 30, height: 30)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(showsPlay ? "开始朗读" : "暂停朗读")
-
-            Button {
-                listening.stop()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.6))
-                    .frame(width: 22, height: 30)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("退出听书")
-        }
-        .padding(.leading, 7)
-        .padding(.trailing, 6)
-        .padding(.vertical, 6)
-        .background(Capsule().fill(Color(white: 0.24).opacity(0.92)))
-        .overlay(alignment: .bottom) {
-            GeometryReader { geo in
-                Capsule()
-                    .fill(Color.white.opacity(0.55))
-                    .frame(width: max(0, geo.size.width * listening.chapterProgress), height: 1.5)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-            }
-            .clipShape(Capsule())
-        }
-        .contentShape(Capsule())
-        .onTapGesture(perform: onOpen)
-        .shadow(color: .black.opacity(0.22), radius: 10, y: 4)
-    }
-
-    /// 待播放 / 已暂停都显示「播放」，只有真的在出声才显示「暂停」
-    private var showsPlay: Bool { listening.isIdle || listening.isPaused }
-    private var playIcon: String { showsPlay ? "play.fill" : "pause.fill" }
-
-    private var subtitle: String {
-        if listening.isPreparingModel { return "正在加载语音模型…" }
-        if listening.isIdle { return "待播放 · \(listening.chapterTitle)" }
-        if listening.isPaused { return "已暂停 · \(listening.chapterTitle)" }
-        return "正在朗读 · \(listening.chapterTitle)"
-    }
-}
-
-/// 胶囊里的圆形封面
-private struct ListeningDisc: View {
-    let hue: Double
-    let title: String
-    let size: CGFloat
-
-    var body: some View {
-        let h = min(1, max(0, hue))
-        let top = Color(hue: h, saturation: 0.58, brightness: 0.72)
-        let bottom = Color(hue: h, saturation: 0.68, brightness: 0.40)
-        return ZStack {
-            Circle()
-                .fill(LinearGradient(colors: [top, bottom], startPoint: .top, endPoint: .bottom))
-            Text(String(title.prefix(1)))
-                .font(.system(size: size * 0.42, weight: .bold))
-                .foregroundStyle(.white.opacity(0.92))
-        }
-        .frame(width: size, height: size)
-    }
-}
-
 /// 播放器用的封面：和书架同一套渐变，尺寸可变
 struct ListeningCover: View {
     let hue: Double
@@ -255,6 +109,11 @@ struct ListeningPlayerView: View {
 
                     controls
 
+                    // 音乐还在等着：点一下原地换成音乐播放器（同一个播放体系）。
+                    // 位置和音乐播放器一致——都在控制区正下方，不能沉到「音色」下面去，
+                    // 否则默认一屏看不到这个切换入口。
+                    PlaybackSwitchChip()
+
                     readAlongRow
 
                     speedRow
@@ -262,8 +121,12 @@ struct ListeningPlayerView: View {
                     voiceRow
 
                     Button {
-                        listening.stop()
+                        // 先收起再停：停掉后播放体系会交回音乐（如果还有），
+                        // 在同一帧里换内容会闪一下音乐播放器
                         dismiss()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) {
+                            listening.stop()
+                        }
                     } label: {
                         Text("退出听书")
                             .font(.footnote.weight(.medium))

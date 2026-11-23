@@ -42,6 +42,8 @@ struct MusicPlayerView: View {
                 titleBlock
                 progress
                 controls
+                // 听书还在等着：点一下原地换成听书播放器（同一个播放体系）
+                switchRow
                 footer
                 Spacer(minLength: 18)
             }
@@ -258,6 +260,11 @@ struct MusicPlayerView: View {
         .padding(.top, 12)
     }
 
+    private var switchRow: some View {
+        PlaybackSwitchChip()
+            .padding(.top, 16)
+    }
+
     private var footer: some View {
         VStack(spacing: 8) {
             if let track = liveTrack {
@@ -307,74 +314,5 @@ struct MusicPlayerView: View {
         guard seconds.isFinite, seconds >= 0 else { return "0:00" }
         let total = Int(seconds.rounded())
         return String(format: "%d:%02d", total / 60, total % 60)
-    }
-}
-
-/// 标签栏上方的迷你音乐条。和听书胶囊同一位置，但两者不会同时出现：
-/// 开音乐时朗读已经停了。
-struct MusicMiniBar: View {
-    @ObservedObject private var player = MusicPlayer.shared
-    @ObservedObject private var settings = ReaderSettings.shared
-
-    var body: some View {
-        if let track = player.track {
-            HStack(spacing: 10) {
-                Button {
-                    player.wantsPlayerSheet = true
-                } label: {
-                    HStack(spacing: 10) {
-                        MusicCover(track: track, size: 34, showsNote: false)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(track.title)
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(settings.theme.foreground)
-                                .lineLimit(1)
-                            Text(track.artist)
-                                .font(.system(size: 9))
-                                .foregroundStyle(settings.theme.secondary)
-                                .lineLimit(1)
-                        }
-                        Spacer(minLength: 4)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    player.toggle()
-                } label: {
-                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(settings.theme.accent)
-                        .frame(width: 30, height: 30)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    player.next()
-                } label: {
-                    Image(systemName: "forward.fill")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(settings.theme.secondary)
-                        .frame(width: 28, height: 30)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(settings.theme.background)
-                    .shadow(color: .black.opacity(0.14), radius: 10, y: 3)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(settings.theme.secondary.opacity(0.18), lineWidth: 0.6)
-            )
-            .padding(.horizontal, 22)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-        }
     }
 }

@@ -126,10 +126,29 @@
 - **播过即入库**：搜到的歌不用点收藏也会进「我的音乐」，否则下次想再听同一首还得重搜一遍。收藏只是再加一层标记
 - **必须「先下后播」而不是边下边播**：ccMixter 的音频直链做了防盗链，请求头必须带**带结尾斜杠**的来源页（`Referer: https://ccmixter.org/`），不带或写成 `https://ccmixter.org` 一律 **403**；`Origin` 单独加也没用，UA 无所谓。而 `AVPlayer` 发不出自定义请求头，直连必然 403 —— 所以播放路径统一成「先下到本地，再播本地文件」。一首 mp3 通常 1–9 MB，实测 9.2 MB 的曲子 8 秒下完，期间播放器显示「首次播放，正在下载 xx%（存好自动开始）」
 - **下载成功要验内容**：403 的响应体是 **10 字节 HTML**，`URLSession` 照样回调「下载成功」。所以下载器会同时查 HTTP 状态码、`Content-Type`（`text/html` 直接判失败）、文件大小（<8 KB 判失败）和文件头（`ID3` / MPEG 帧同步 / `ftyp` / `FLAC`）。校验不过就删文件、不写 `cachedFile`，界面显示「缓存失败」。老版本已经把 10 字节错误页当成 mp3 存进来的，启动时自愈一次（<64 KB 的缓存连同索引标记一起清掉）
-- **播放器是全局单例**：切标签、进阅读器都不停；播放器 sheet 挂在根视图上（搜索结果、书架、迷你条都只是把 `wantsPlayerSheet` 置 true），不会因为某个子视图被销毁而掉。开音乐前会先停掉听书朗读 —— 同一时刻只该有一个在出声
-- 锁屏 / 控制中心支持播放、暂停、上一首、下一首、拖进度（`MPRemoteCommandCenter` + `MPNowPlayingInfoCenter`），后台继续播
+- **播放器是全局单例**：切标签、进阅读器都不停；统一播放器挂在根视图上（搜索结果、书架、迷你条都只是把 `wantsPlayer` 置 true），不会因为某个子视图被销毁而掉。听书与音乐共用一套播放体系，见下面「听书和音乐是一套播放体系」
+- 锁屏 / 控制中心支持播放、暂停、上一首、下一首、拖进度（`MPRemoteCommandCenter` + `MPNowPlayingInfoCenter`），后台继续播；**只有当前这一档能响应**，否则听书和音乐会一起被暂停
 - **程序化封面**：开源曲库大多没有专辑图，用 FNV-1a 由曲目 id 算一个稳定色相 + 首字母画一张。不能用 `hashValue` —— 它每次启动都变，同一首歌的颜色会跟着变
 - 落盘后顺手读一次真实时长补进索引：曲库给的时长经常是空的，列表里全是 `--:--`
+
+### 听书和音乐是一套播放体系（不是两个播放器）
+
+以前是两条平行线：`MusicPlayer.play` 里直接 `ListeningCenter.stop()`，听书开播时又把音乐晾在一边。结果是「谁先出声谁把对方清空」——听歌时点一下听书，音乐连同播放位置一起没了；反过来听书被踢出体系。界面上也难看：两根悬浮条抢同一个位置，音乐条永远压着「听」球。
+
+现在收成一个中枢 `PlaybackCenter`：
+
+- **只区分「现在在播哪一档」**：`kind = .book / .music / .none`。出声的永远只有一档，但切换时另一方只 `pause()`，书还在、章节还在、歌和进度都留着
+- **一条悬浮条**：在播就显示当前这一档（听书 → 书名 + 章节；音乐 → 歌名 + 歌手），底部一条 2pt 进度线，点开进统一播放器；都没在播时才显示「听」球。参考汽水音乐的做法：圆角封面 + 两行字 + 一排轻按钮，压不住正文
+- **一个播放器两种形态**：全屏播放器按 `kind` 切内容——听书时是听书播放器（封面、章节胶囊、语速、音色），听音乐时是音乐播放器（封面、进度、随机/循环）。底部有一条「接着听书 / 接着听音乐」，点一下**原地换形态**并真的接着播，不叠第二个弹窗
+- **锁屏信息只有一档在写**：两边都写 `MPNowPlayingInfoCenter` 会出现「歌名 + 书名」的错乱，所以按 `kind` 判归属
+
+自检参数 `--playback-selftest` 会把这条链路跑一遍并打日志，判据是切换后对方的 id 还在：
+
+```
+[Playback] book-started  kind=book  bookActive=1 bookID=23D1F68C…
+[Playback] music-started kind=music musicPlaying=1 bookPaused=1 bookID=23D1F68C…   ← 书只被暂停
+[Playback] back-to-book  kind=book  musicTrack=Reverie …                            ← 歌也没丢
+```
 
 ### 看动漫 / 视频（在线播，可下载）
 
@@ -383,7 +402,8 @@ iRead/
                 PictureBookSource（Book Dash 绘本：书目 → 详情 → 内页原图）、
                 ComicDownloadManager（按话原子下载 + 断点续传 · 整本串行）
                 音乐：MusicCatalog（ccMixter / Jamendo 检索）、MusicStore（索引 + 缓存文件）、
-                MusicPlayer（全局单例 · 锁屏控制 · 先下后播）
+                MusicPlayer（全局单例 · 锁屏控制 · 先下后播）、
+                PlaybackCenter（播放中枢：听书与音乐共用一个播放体系，只区分当前是谁在播）
                 视频：VideoCatalog（NASA 影像库 + 内置开源片单）、VideoStore（进度 / 下载）
                 MediaDownloader（音乐与视频共用的流式下载器：请求头 + 状态码/文件头校验）
                 AI 写作：AIService（服务商预设 + Keychain + 流式客户端）、
@@ -402,7 +422,9 @@ Vendor/booklists/  殆知阁 1.5 万本公版书目（随包，本地搜索）
                 NovelSearch（书籍频道）、NovelDetail（详情/下载）、SourceManager（书源管理）、
                 DownloadTasks（下载任务）、AccountLogin（内置网页登录）
                 漫画：ComicSearch（漫画频道）、ComicDetail（目录/缓存）、ComicReaderView（竖滑阅读器）
-                音乐：MusicSearchView（推荐/搜索/我的音乐）、MusicPlayerView（全屏播放器 + MusicMiniBar）、
+                音乐：MusicSearchView（推荐/搜索/我的音乐）、
+                NowPlayingBar（统一悬浮条 NowPlayingDock + 统一播放器 NowPlayingView，按当前媒体换形态）、
+                MusicPlayerView（音乐形态的全屏播放器）、
                 MediaShelfViews（书架里的音乐方格 / 视频卡片）
                 视频：VideoSearchView（动漫/视频频道 + VideoPlayerView）
                 写作：WritingHome（书目/新建）、WritingEditor（项目编辑器 + 章节编辑器 + 修改意见面板 + 流式生成面板）、
@@ -456,6 +478,17 @@ iOS 包必须选 `ios-shared-onnxruntime-static` 这一款：`ios-static` 变体
    实测 731 字的章：修复前 `usedRect` 688pt（17 行），修复后 2301pt（55 行），与 `sizeThatFits` 一致。
 2. **`widthTracksTextView` / `heightTracksTextView` 必须关**，否则 `sizeThatFits` 会把高度截断。
 3. **`isScrollEnabled = false` + 自己算高度** 是单章整块渲染的正确组合；不要指望 `intrinsicContentSize`。
+
+### 连续滚动为什么会「回弹」（滑窗的账要成对算）
+
+全书堆在一条 `UIScrollView` 里，只保留视口附近几章。窗口一移动就有两笔账要算，早先只算了一笔：
+
+- **前插一章**：所有章节整体下移 `h`，`contentOffset.y` 必须同步 `+h`，眼睛才不动
+- **裁掉上方的章**：所有章节整体上移 `removed`，`contentOffset.y` 必须同步 `-removed`。**漏了这一步**，`contentSize` 跟着变小，`UIScrollView` 发现 offset 超过新的最大值就**把页面夹回去** —— 快速下滑时那一下「弹回原处」就是它
+- **手势进行中不要改 `contentOffset`**：拖拽/惯性期间 UIScrollView 会按手指位移写 offset，我们的修正被覆盖，观感是页面被拽一下。所以现在滚动中**只做底部追加**（contentSize 变大不会夹 offset），前插与裁剪全部推迟到「停下 0.28s 后」（`rebalanceWindow`），并且按**章数**而不是点数留跑道 —— 章高从几百点到上万点都有，按点数会出现「刚裁掉又要插回来」的来回抖动
+- 视口上方长期保留 2 章跑道，手指落下就能往上滑很远；`alwaysBounceVertical` 关掉，短书不再一划就弹
+
+自检：`--debug-reader-text --scroll-selftest` 连续下滑 18 次、上滑 18 次，判据是「视口顶部落在哪一章哪个字」不能逆向变化（`bounces=0`）。
 
 ## 构建与运行
 
@@ -515,6 +548,12 @@ xcodebuild -project iRead.xcodeproj -scheme iRead \
 - `--video-selftest --play`：拉 NASA 片单 → 打开第一条 → 打 `ready total` 与 `playing t=…`（时间在走才算真能解码）
 - `--anime-selftest`：同上，跑内置开源动画片单（和视频频道共用视图，所以参数分开）
 - `--bookdash-selftest`：绘本全链路（书目 → 详情 → 内页 → 真下第一张图）。源站一改版这里最先红，比在阅读器里看到空白快得多
+- `--playback-selftest`：听书 → 开音乐 → 切回听书，验证「同一套播放体系」。
+  加 `--playback-open` 会在切回听书后打开统一播放器，再点一次「接着听音乐」，验证播放器**原地换形态**。
+  判据是切换后对方没被清空（记录里还有 `bookID` / `musicTrack` 就不算丢）
+- `--debug-reader-text`：打开第一本**有正文**的文字书（跳过绘本/漫画），滚动、听书跟随的自测都靠它
+- `--scroll-selftest`：连续下滑 18 次 + 上滑 18 次，逐步打 `ch / char / y / size / win`，
+  判据是「视口顶部落在哪一章哪个字」不能逆向变化。收尾打 `bounces=0` 才算过
 - `--debug-settings`：启动后直接弹出设置页（与书架齿轮同一入口）
 - `--scroll-mid`：直接定位到章中 45%
 - `--scroll-end`：定位到章末（验证跨章衔接）

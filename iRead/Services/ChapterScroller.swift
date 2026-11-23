@@ -220,6 +220,13 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
     private var reportedChar = -1
     private var pendingRestore: (chapter: Int, char: Int)?
     private var isAdjusting = false
+    /// 静止后做「布局手术」（前插 / 裁章）的定时器
+    private var balanceWork: DispatchWorkItem?
+
+    /// 手指按着或惯性还在滑。这两个状态里**绝不能**改 contentOffset：
+    /// UIScrollView 会用手势的位移把我们的修正覆盖掉，
+    /// 表现就是「快速滑动时页面被拽回去」——也就是用户说的回弹。
+    private var isGestureScrolling: Bool { isTracking || isDecelerating }
 
     var onPositionChange: ((Int, Int) -> Void)?
     var onTap: (() -> Void)?
@@ -246,7 +253,9 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         delegate = self
         showsVerticalScrollIndicator = false
         showsHorizontalScrollIndicator = false
-        alwaysBounceVertical = true
+        // 内容不足一屏时不要橡皮筋：短书（或刚重建窗口）一划就弹一下很怪。
+        // 内容超过一屏时边缘回弹是系统手感，保留。
+        alwaysBounceVertical = false
         contentInsetAdjustmentBehavior = .never
         backgroundColor = .clear
 
@@ -350,9 +359,14 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         let visibleBottom = contentOffset.y + bounds.height - contentInset.bottom
 
         if !isFollowingSpeech {
-            if y >= visibleTop, y <= visibleBottom - 40 {
+            // 手还没停就别抢回跟随权：否则这一句恰好在视口内就立刻恢复跟随，
+            // 下一句又把正在飞行的页面拽回朗读位置（也是「回弹」的来源之一）
+            if !isGestureScrolling, y >= visibleTop, y <= visibleBottom - 40 {
                 isFollowingSpeech = true
             }
+            #if DEBUG
+            print("[Scroll] follow skipped ch=\(chapter) char=\(char) gesture=\(isGestureScrolling)")
+            #endif
             return
         }
 
@@ -390,6 +404,17 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
     func simulateUserScroll(by dy: CGFloat) {
         isFollowingSpeech = false
         setContentOffset(CGPoint(x: 0, y: contentOffset.y + dy), animated: false)
+    }
+
+    /// 自测用：视口相对「窗口顶端」的位置。
+    ///
+    /// 裁剪/前插会同时改 `contentOffset` 和 `tops`，单看 offset 判断不了有没有跳，
+    /// 这个相对值才是用户眼里的位置——它只应该随手指移动。
+    func debugState() -> (offset: CGFloat, relative: CGFloat, height: CGFloat, range: ClosedRange<Int>?) {
+        guard let range = loadedRange else {
+            return (contentOffset.y, contentOffset.y, contentSize.height, nil)
+        }
+        return (contentOffset.y, contentOffset.y - (tops[range.lowerBound] ?? 0), contentSize.height, range)
     }
     #endif
 
@@ -454,7 +479,7 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         heights.removeAll()
         tops.removeAll()
 
-        let lo = max(0, center - 1)
+        let lo = max(0, center - 2)
         let hi = min(chapterCount - 1, center + 2)
         loadedRange = lo...hi
         for ch in lo...hi { loadChapter(ch) }
@@ -470,6 +495,9 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
             pendingRestore = nil
             applyPosition(chapter: center, char: max(0, restoreChar))
         }
+        // 视口上方先备好跑道：手指一落下就能往上滑很远，
+        // 不必在滑动中途前插（那正是回弹的来源）
+        scheduleBalance(after: 0.35)
     }
 
     @discardableResult
@@ -510,19 +538,25 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
 
     // MARK: 动态扩缩窗口
 
+    /// 在底部追加一章。
+    ///
+    /// 追加只会让 contentSize 变大，不会夹到当前 offset，所以**允许在滑动中进行**；
+    /// 一旦等到静止才补，用户就已经滑到底部空白了。
     private func appendNextIfNeeded() {
         guard let loadedRange, loadedRange.upperBound + 1 < chapterCount else { return }
         let next = loadedRange.upperBound + 1
         guard loadChapter(next) != nil else { return }
         self.loadedRange = loadedRange.lowerBound...next
         relayoutPositions()
-        trimTopIfNeeded()
+        scheduleBalance()
     }
 
-    private func prependPreviousIfNeeded() {
-        guard let loadedRange, loadedRange.lowerBound > 0 else { return }
+    /// 在顶部前插一章。会改写 contentOffset，**只能在静止时**调用。
+    @discardableResult
+    private func prependPreviousIfNeeded() -> Bool {
+        guard !isGestureScrolling, let loadedRange, loadedRange.lowerBound > 0 else { return false }
         let prev = loadedRange.lowerBound - 1
-        guard let height = heights[prev] ?? loadChapter(prev)?.frame.height else { return }
+        guard let height = heights[prev] ?? loadChapter(prev)?.frame.height else { return false }
 
         let shift = height + chapterGap
         self.loadedRange = prev...loadedRange.upperBound
@@ -532,31 +566,45 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         isAdjusting = true
         contentOffset.y += shift
         isAdjusting = false
-        trimBottomIfNeeded()
+        return true
     }
 
-    /// 裁掉离视口过远的上方章节
+    /// 裁掉离视口过远的上方章节。
+    ///
+    /// 裁剪会让所有章节的 y 一起上移、contentSize 变小；如果不同步把 offset 收回来，
+    /// UIScrollView 发现 offset 超过新的最大值就会**把页面夹回去**——
+    /// 这就是「快速滑一下又弹回原处」最直接的原因。
+    /// 所以这里必须成对：删了多少高度，offset 就减多少，而且只在静止时做。
     private func trimTopIfNeeded() {
-        guard let loadedRange else { return }
+        guard !isGestureScrolling, let loadedRange else { return }
         let visibleTop = contentOffset.y + contentInset.top
+        let current = chapterAtViewportTop ?? loadedRange.lowerBound
         var lo = loadedRange.lowerBound
+        var removed: CGFloat = 0
         while lo < loadedRange.upperBound {
             guard let top = tops[lo], let height = heights[lo] else { break }
-            if top + height + chapterGap < visibleTop - CGFloat(keepBehind) * 2000 {
-                views[lo]?.removeFromSuperview()
-                views[lo] = nil
-                heights[lo] = nil
-                lo += 1
-            } else {
-                break
-            }
+            // 两个条件都要满足才裁：离得够远，而且视口上方还留着 3 章。
+            // 只按点数判断的话，碰到一章上万点的长篇，会出现
+            // 「刚裁掉 — 跑道不足 — 又插回来」的来回抖（白排版一遍，还掉帧）。
+            let farEnough = top + height + chapterGap < visibleTop - CGFloat(keepBehind) * 2000
+            guard farEnough, current - lo > 3 else { break }
+            removed += height + chapterGap
+            views[lo]?.removeFromSuperview()
+            views[lo] = nil
+            heights[lo] = nil
+            lo += 1
         }
-        if lo != loadedRange.lowerBound {
-            self.loadedRange = lo...loadedRange.upperBound
-            relayoutPositions()
+        guard lo != loadedRange.lowerBound else { return }
+        self.loadedRange = lo...loadedRange.upperBound
+        relayoutPositions()
+        if removed > 0 {
+            isAdjusting = true
+            contentOffset.y = max(-contentInset.top, contentOffset.y - removed)
+            isAdjusting = false
         }
     }
 
+    /// 裁掉离视口过远的下方章节。不改变上方坐标，随时可以裁。
     private func trimBottomIfNeeded() {
         guard let loadedRange else { return }
         let visibleBottom = contentOffset.y + bounds.height - contentInset.bottom
@@ -578,16 +626,66 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         }
     }
 
+    // MARK: 静止后的窗口整理
+
+    /// 滚动事件很密集，每次停下 0.28s 才整理一次窗口。
+    /// 定时器会不断重置，所以手指一直滑的时候它永远不会触发。
+    private func scheduleBalance(after delay: TimeInterval = 0.28) {
+        balanceWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.rebalanceWindow() }
+        balanceWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    /// 把窗口整理到「上方有足够跑道、远端不占内存」的状态。
+    /// 所有会改动 contentOffset 的操作都集中在这里，保证只在静止时执行。
+    private func rebalanceWindow() {
+        guard didConfigure, pendingRestore == nil else { return }
+        guard !isGestureScrolling, !isAdjusting else {
+            scheduleBalance(after: 0.35)
+            return
+        }
+
+        // 1. 视口上方补足跑道：至少留 2 章。
+        // 按「章数」而不是点数算——章高从几百点到上万点都有，点数会把窗口算歪。
+        var steps = 0
+        while steps < 3 {
+            guard let range = loadedRange, range.lowerBound > 0,
+                  let current = chapterAtViewportTop else { break }
+            if current - range.lowerBound >= 2 { break }
+            if !prependPreviousIfNeeded() { break }
+            steps += 1
+        }
+
+        // 2. 裁掉远端章节
+        trimTopIfNeeded()
+        trimBottomIfNeeded()
+
+        // 3. 底部余量不足一屏就再补一章，避免用户滑到空白
+        let visibleBottom = contentOffset.y + bounds.height - contentInset.bottom
+        if contentSize.height - visibleBottom < bounds.height {
+            appendNextIfNeeded()
+        }
+    }
+
     // MARK: 位置换算
 
-    /// 当前视口顶部所在的 (章, 章内字符)
-    var position: (chapter: Int, char: Int) {
-        guard let loadedRange, !tops.isEmpty else { return (0, 0) }
+    /// 视口顶部所在的章号
+    private var chapterAtViewportTop: Int? {
+        guard let loadedRange else { return nil }
         let y = contentOffset.y + contentInset.top
         var best = loadedRange.lowerBound
         for ch in loadedRange {
             if let top = tops[ch], top <= y + 1 { best = ch } else { break }
         }
+        return best
+    }
+
+    /// 当前视口顶部所在的 (章, 章内字符)
+    var position: (chapter: Int, char: Int) {
+        guard let loadedRange, !tops.isEmpty else { return (0, 0) }
+        let y = contentOffset.y + contentInset.top
+        let best = chapterAtViewportTop ?? loadedRange.lowerBound
         let local = y - (tops[best] ?? 0)
         let char = views[best]?.characterIndex(atLocalPoint: CGPoint(x: 0, y: max(0, local))) ?? 0
         return (best, char)
@@ -648,16 +746,31 @@ final class BookScrollContainer: UIScrollView, UIScrollViewDelegate {
         guard !isAdjusting else { return }
         report(force: false)
 
+        // 滚动中只做「向下追加」这种安全的扩窗：contentSize 变大不会夹到 offset。
+        // 前插、裁剪都要改 contentOffset，排到静止之后（见 rebalanceWindow）。
         let visibleBottom = contentOffset.y + bounds.height - contentInset.bottom
         let maxY = contentSize.height - contentInset.bottom
         if maxY - visibleBottom < prefetchMargin {
             appendNextIfNeeded()
         }
-        let visibleTop = contentOffset.y + contentInset.top
-        if visibleTop < prefetchMargin {
-            prependPreviousIfNeeded()
+        if contentOffset.y + contentInset.top < prefetchMargin {
+            scheduleBalance()
         }
     }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate { scheduleBalance(after: 0.12) }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        scheduleBalance(after: 0.12)
+    }
+
+    func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+        scheduleBalance(after: 0.12)
+    }
+
+    deinit { balanceWork?.cancel() }
 }
 
 // MARK: - 控制代理
@@ -745,6 +858,16 @@ final class ScrollProxy: ObservableObject {
     /// 自测：模拟手动滚开
     func simulateUserScroll(by dy: CGFloat) {
         container?.simulateUserScroll(by: dy)
+    }
+
+    /// 自测：offset / 相对位置 / 内容高度 / 已加载窗口
+    func debugState() -> (offset: CGFloat, relative: CGFloat, height: CGFloat, range: ClosedRange<Int>?) {
+        container?.debugState() ?? (0, 0, 0, nil)
+    }
+
+    /// 自测：视口顶部落在哪一章哪个字。回弹的判据看它是否逆向变化。
+    func debugPosition() -> (chapter: Int, char: Int) {
+        container?.position ?? (0, 0)
     }
     #endif
 }
