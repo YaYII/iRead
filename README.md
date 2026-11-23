@@ -2,6 +2,8 @@
 
 纯原生（SwiftUI + TextKit）的中文小说阅读器，支持**看**和**听**，阅读完全离线。内置 Piper 中文神经语音模型，音质接近真人。新增「搜书」功能：从内置书源在线搜索、下载到本机后离线阅读，阅读时没有 App 广告。另有独立的**漫画**模块：漫画搜索、按话缓存、图片阅读器，和文字书分开管理。
 
+搜索已经收敛成**一个入口、五个频道**（书籍 / 漫画 / 音乐 / 动漫 / 视频）：书和漫画是「搜到 → 下到本机」，音乐和视频是「点一下就在线播」，音乐播过的会自动存一份到本机，下次不用再下。书架也跟着扩成**书 / 漫画 / 音乐 / 视频**四类，四类同表、按 `kind` 分流。
+
 还多了一个**写作**模块：可以改写、分叉、续写正在看的那一章，也可以拿书架当口味参考从零起一本；长篇能一章一章连着写，写完逐章批注、再一次性按意见改；导出 TXT 直接投平台。**看是看，写是写** —— AI 产出只进写作稿，从不回写原书。
 
 > **使用声明：仅供个人学习、禁止传播、禁止批量、看完即删、责任自担。**
@@ -23,7 +25,7 @@
 - **选中就是系统选中**：长按出现放大镜、左右圆形手柄、可拖拽调整范围，复制 / 查询 / 翻译 / 朗读全在系统菜单里 —— 选中框和手感与系统完全一致，不是自绘的假选中
 - 排版可调：字号 14–36、行距、段间距、四向边距、粗体；四套主题（纸张 / 羊皮纸 / 护眼 / 夜间）
 - 书架：网格 / 列表、搜索、置顶、已读标记、重命名、进度百分比、阅读进度记忆（精确到章内位置）
-- **全局设置只做一个齿轮**：书架右上角的 icon（不带文字、不占标签栏），点开以 sheet 弹出，管阅读偏好 / AI 写作 / 数据 / 关于；底部标签栏只有「书架 / 搜书 / 漫画 / 写作」四项。阅读页底栏那个「设置」是另一层，只调当前这本书的观感，不与它重复
+- **全局设置只做一个齿轮**：书架右上角的 icon（不带文字、不占标签栏），点开以 sheet 弹出，管阅读偏好 / AI 写作 / 数据 / 关于；底部标签栏只有「书架 / 搜索 / 写作」三项（搜索页内部再分五个频道）。阅读页底栏那个「设置」是另一层，只调当前这本书的观感，不与它重复
 - **不做书签**（2026-11-22 删除）：看网文是「一路往下追」，没有回头标记段落的习惯，所以底栏只留「目录 / 设置 / 沉浸」三项。上次读到哪由阅读进度自动记住（精确到章内位置），退出再进直接接上，不需要手动标记
 - 听书：**同样只有一个入口** —— 阅读页右下的「听」球（沉浸模式下也在），点开就是播放器；顶栏那颗耳机图标已删，它和「听」球指向同一个界面。播放中那颗球会变成播放胶囊，暂停 / 继续 / 进度都在上面
 - **阅读界面里就看得见下载进度**（2026-11-22）：顶栏章节名右侧标「已下 284/711」，目录页头部标「已下 56/711 章 · 还差 655 章」，底部直接给「继续下载剩余 N 章」—— 想确认这本下到哪、还差多少，不用退出阅读去下载页看
@@ -63,7 +65,7 @@
 > 传书时需要 iRead 保持在前台；切后台太久系统可能挂起本地服务。
 
 ### 搜书与下载（在线找书，离线阅读）
-「搜书」标签页可从书源搜索书名，选中后把正文**下载到本机**加入书架，之后走和本地导入完全相同的离线阅读链路 —— 阅读本身不联网。
+搜索页第一个频道「书籍」可从书源搜索书名，选中后把正文**下载到本机**加入书架，之后走和本地导入完全相同的离线阅读链路 —— 阅读本身不联网。
 
 - **已移除番茄 / 七猫源**（2026-11-21）：七猫网页端只开放前若干章，后段要在七猫 App 内开通会员才给读；番茄重复条目多、章节接口经常挂住（实测单条 25s+ 不返回）。两者对「下载全本」帮助都很小，还会拖慢搜索与章节统计，已从内置书源里去掉。实现代码（`FanqieSource` / `QimaoSource`）保留，需要时把源条目加回 `SourceStore.fallbackSources` 即可。
 - **内置公版书源**：殆知阁古籍（1.5 万+ 本经史子集、四大名著、诗词小说、中医典籍）。书目随 App 打包（本地即时搜索、无 API 限流），正文从 jsDelivr/raw CDN 下载，大陆可达。
@@ -96,9 +98,9 @@
 
 > 在线环节只有「搜索 + 下载」。正文落盘后，阅读/听书/排版全部离线，与本项目一贯的离线定位一致。
 
-### 看漫画（独立模块，和文字书分开）
+### 看漫画
 
-书架顶部有「电子书 / 漫画书」分段（左边默认电子书），右边是漫画书架；底部「漫画」标签页是**独立的搜索入口**，和「搜书」互不相干 —— 两类源的输入、结果、阅读器都不同，混在一个搜索框里每次都会白跑一半源。
+书架顶部有四个分类胶囊「书 / 漫画 / 音乐 / 视频」，看哪种内容就切到哪一类；底部「搜索」标签页里的「漫画」频道是漫画的搜索入口，和「书籍」频道互不相干 —— 两类源的输入、结果、阅读器都不同，混在一个搜索框里每次都会白跑一半源。
 
 - **共用一张表，按 `kind` 分流**：漫画也是 `library.json` 里的一条，`kind = "comic"`。备份、搜索、进度、置顶这些逻辑不必各写一份；书源同理，`NovelSource.media = "comic"`，`enabledSources` 自动把漫画源排除在「搜书」之外
 - **存储**：每本漫画一个 `<uuid>.comic/` 目录，`meta.json` 记章节与每页的宽高/是否已落盘，图片按 `c<话号>/001.jpg` 存（几百话 × 几十页塞进 `library.json` 会把书架索引撑到几 MB）
@@ -107,12 +109,40 @@
 - **缓存一眼可见**：书架封面角标「已缓存 x/总话数」，详情页「已缓存 x/y 话 · N 页」，章节 chip 带下载图标
 - **本地导入**：书架的 `+` 选多张图片 → 统一转 JPEG、长边压到 2000 → 生成一本漫画，全程不联网
 - **内置漫画源只有 MangaDex**：国内能直连的中文漫画站基本都上了 JS 动态渲染或签名校验，纯规则抓不动（baozimh / copymanga / manhuagui / mangabz / dm9 实测全部不可用）。MangaDex 是公开 API，优先取简中/繁体译本，没有中文时回退全语言；第三方漫画站可以导入 JSON 规则（`media: "comic"`，`content.list` 填图片选择器）
+- **内置绘本源 Book Dash**（`builtin-bookdash`）：全部 CC BY 4.0，整本内页大图直接给，免注册、境内可连。绘本的内页本来就是图片，所以直接复用漫画那套「按话缓存 + 图片阅读器」，一本书就是一话，不需要另写 PDF 渲染器。书目走 WordPress REST（`/wp-json/wp/v2/books`），只取英文（`languages=621`）和无字绘本（`643`）—— Book Dash 同一个故事有十几种南非语言译本，最新上传的往往是文达语、聪加语这类读不了的版本，不过滤的话首页全是它
+- **绘本页解析踩过两次改版**：老页面内页图叫 `*_interior_spreads_3.jpg`，还带 428w/768w 尺寸变体；2026-11 改成在 `read-book` 弹层里排一串 `<a href="原图">`，`data-src` 上只是懒加载缩略图。现在**优先认新结构**（`<a href>` 就是原图，DOM 顺序就是页序，不用再去尺寸后缀），旧结构留作兜底 —— 只认一种的话，站点一改版就静默返回 0 页，用户看到的是空白阅读器
 - **两个实测踩到的坑**：MangaDex 的 edge 对「像浏览器」的 UA 会回一个 JS 校验页（正文是 HTML，JSON 解析必然失败）；它的图床 `*.mangadex.network` 更隐蔽 —— 带 Safari UA 时不报错也不挑战，只对开头几张之后的请求直接回 **404**，看起来特别像「图源不全」。两处都必须用可识别的自定义 UA
 - **使用声明**：漫画源只提供抓取能力，内容版权归原作者与出版方，请自行确认合法性、勿传播。
 
 ![漫画书架](docs/screenshots/30-comic-shelf.png)
 ![漫画详情](docs/screenshots/31-comic-detail.png)
 ![漫画阅读](docs/screenshots/32-comic-reader.png)
+
+### 听音乐（在线播，播过就存下来）
+
+搜索页第三个频道。曲库是开源社区 **ccMixter**（Creative Commons 混音，免注册、公开 JSON API、mp3 直链，境内实测可连）；Jamendo 留了入口，填了免费 `client_id` 就一起搜，没填不占界面。
+
+- **点一下就在线播**，同时把整首存到 `Documents/Music/Cache/<sha256前32位>.mp3`，索引在 `Documents/Music/library.json`。下次再点同一首直接读本地文件，不再走网络 —— 需求里的「自动保存，下次不用额外下载」就是这条
+- **播过即入库**：搜到的歌不用点收藏也会进「我的音乐」，否则下次想再听同一首还得重搜一遍。收藏只是再加一层标记
+- **必须「先下后播」而不是边下边播**：ccMixter 的音频直链做了防盗链，请求头必须带**带结尾斜杠**的来源页（`Referer: https://ccmixter.org/`），不带或写成 `https://ccmixter.org` 一律 **403**；`Origin` 单独加也没用，UA 无所谓。而 `AVPlayer` 发不出自定义请求头，直连必然 403 —— 所以播放路径统一成「先下到本地，再播本地文件」。一首 mp3 通常 1–9 MB，实测 9.2 MB 的曲子 8 秒下完，期间播放器显示「首次播放，正在下载 xx%（存好自动开始）」
+- **下载成功要验内容**：403 的响应体是 **10 字节 HTML**，`URLSession` 照样回调「下载成功」。所以下载器会同时查 HTTP 状态码、`Content-Type`（`text/html` 直接判失败）、文件大小（<8 KB 判失败）和文件头（`ID3` / MPEG 帧同步 / `ftyp` / `FLAC`）。校验不过就删文件、不写 `cachedFile`，界面显示「缓存失败」。老版本已经把 10 字节错误页当成 mp3 存进来的，启动时自愈一次（<64 KB 的缓存连同索引标记一起清掉）
+- **播放器是全局单例**：切标签、进阅读器都不停；播放器 sheet 挂在根视图上（搜索结果、书架、迷你条都只是把 `wantsPlayerSheet` 置 true），不会因为某个子视图被销毁而掉。开音乐前会先停掉听书朗读 —— 同一时刻只该有一个在出声
+- 锁屏 / 控制中心支持播放、暂停、上一首、下一首、拖进度（`MPRemoteCommandCenter` + `MPNowPlayingInfoCenter`），后台继续播
+- **程序化封面**：开源曲库大多没有专辑图，用 FNV-1a 由曲目 id 算一个稳定色相 + 首字母画一张。不能用 `hashValue` —— 它每次启动都变，同一首歌的颜色会跟着变
+- 落盘后顺手读一次真实时长补进索引：曲库给的时长经常是空的，列表里全是 `--:--`
+
+### 看动漫 / 视频（在线播，可下载）
+
+搜索页的第四、第五个频道。两类只在检索源上不同，列表和播放器完全共用。
+
+- **视频走 NASA 影像库**（`images-api.nasa.gov`，公共领域）：搜主题词拿片单，封面取 `~medium.jpg`，直链是 `~mobile.mp4`。实测 228 秒的正片能正常解码、时间在走
+- **动漫是内置片单**：Blender 基金会的开源电影（Big Buck Bunny / Sintel / Tears of Steel 等）。只收 AVPlayer 真能播的 mp4 —— `download.blender.org` 上大量是 mkv/zip，下下来也只能干瞪眼
+- **在线播放为主，想留着就下载**：种子直链下载走 `URLSessionDownloadTask`（几百 MB 不进内存），进度按 `video:<id>` 暴露；下载同样要过文件头校验（`ftyp` / Matroska / `RIFF` / MPEG-TS），避免把错误页存成 mp4
+- **m3u8 不提供下载**：HLS 是切片清单，按单文件存下来播不了，所以列表里对 m3u8 隐藏下载按钮，但**仍然可以在线播**
+- **接着上次看**：进度按 `秒/总时长` 写回 `Documents/Video/library.json`，书架卡片底部有进度条；再次打开时等 `readyToPlay` 再 seek（太早 seek 会被丢弃）
+- **支持自己加直链**：右上角「+」填标题 + `mp4/m3u8` 地址，直接进「视频」书架
+
+> 音乐和视频都是「在线看/听」，落盘只是为了下次不用再下；书架里那两类可以随时删，不影响别的数据。
 
 ### AI 写作（看是看，写是写）
 
@@ -331,9 +361,11 @@ swiftc -O -parse-as-library iRead/Models/NovelModels.swift \
 
 ```
 iRead/
-  App/          iReadApp、ContentView（Tab：书架 / 搜书 / 漫画 / 写作；设置由书架右上角齿轮弹出）
+  App/          iReadApp、ContentView（Tab：书架 / 搜索 / 写作；设置由书架右上角齿轮弹出）
   Models/       Models（Book/Chapter/主题/音色档位）、ReaderSettings
   Models/       NovelModels（书源规则/SearchResult/章节/下载任务）、ComicModels（漫画章节 / 每一页）、
+                SearchCategory（统一搜索的五个频道）、MusicModels（曲目 / 曲库来源 / 程序化封面）、
+                VideoModels（动漫/视频条目）、
                 Writing（写作模式 / 章节草稿 / 作品 / 阅读页三动作）。ReaderSettings（原有）
   Services/     TextParser（编码+分章）、LibraryStore（书库）、
                 WiFiTransferServer（局域网传书 HTTP 服务）、
@@ -348,7 +380,12 @@ iRead/
                 NovelDownloadManager（下载入库 · 单本队列调度 · 重启续传）、
                 SourceStore（书源仓库）、AccountStore（登录 Cookie，Keychain）
                 漫画：ComicFetcher（源分发）、MangaDexSource（三步式 API 专用实现）、
+                PictureBookSource（Book Dash 绘本：书目 → 详情 → 内页原图）、
                 ComicDownloadManager（按话原子下载 + 断点续传 · 整本串行）
+                音乐：MusicCatalog（ccMixter / Jamendo 检索）、MusicStore（索引 + 缓存文件）、
+                MusicPlayer（全局单例 · 锁屏控制 · 先下后播）
+                视频：VideoCatalog（NASA 影像库 + 内置开源片单）、VideoStore（进度 / 下载）
+                MediaDownloader（音乐与视频共用的流式下载器：请求头 + 状态码/文件头校验）
                 AI 写作：AIService（服务商预设 + Keychain + 流式客户端）、
                 WritingStore（草稿一稿一 JSON + 导出 TXT）、
                 WritingPrompts（全部 prompt 与「标题/正文」拆分）、
@@ -361,9 +398,13 @@ tools/
   legado-verify/                   macOS 命令行自检（复用 App 选择器引擎联网跑三阶段）
 Vendor/booklists/  殆知阁 1.5 万本公版书目（随包，本地搜索）
   Views/        Bookshelf、Import、Reader、ChapterList、ReaderSettings、Settings
-                NovelSearch（搜书）、NovelDetail（详情/下载）、SourceManager（书源管理）、
+                SearchHubView（统一搜索 · 五频道左右滑）、
+                NovelSearch（书籍频道）、NovelDetail（详情/下载）、SourceManager（书源管理）、
                 DownloadTasks（下载任务）、AccountLogin（内置网页登录）
-                漫画：ComicSearch（独立搜索）、ComicDetail（目录/缓存）、ComicReaderView（竖滑阅读器）
+                漫画：ComicSearch（漫画频道）、ComicDetail（目录/缓存）、ComicReaderView（竖滑阅读器）
+                音乐：MusicSearchView（推荐/搜索/我的音乐）、MusicPlayerView（全屏播放器 + MusicMiniBar）、
+                MediaShelfViews（书架里的音乐方格 / 视频卡片）
+                视频：VideoSearchView（动漫/视频频道 + VideoPlayerView）
                 写作：WritingHome（书目/新建）、WritingEditor（项目编辑器 + 章节编辑器 + 修改意见面板 + 流式生成面板）、
                 AutoWriteView（连写 / 按意见重写面板 + 大纲编辑）、ChapterAIView（阅读页 AI 面板）
 Vendor/
@@ -464,6 +505,16 @@ xcodebuild -project iRead.xcodeproj -scheme iRead \
 - `--comic-open-first`：漫画搜索完成后自动打开第一条结果（配 `--comic-search`）
 - `--comic-read`：漫画详情页加载完直接进第一话（配 `--comic-open-first`，会真下载整话）
 - `--open-comic-search`：从书架打开「漫画搜索」sheet（验证书架入口）
+- `--shelf-music` / `--shelf-video`：书架直接停在「音乐 / 视频」分类
+
+搜索频道 / 音乐 / 视频（都走服务层自检，不依赖点界面）：
+
+- `--search-category book|comic|music|anime|video`：启动落到指定频道
+- `--search-music` / `--search-anime` / `--search-video`：同上，写起来短一点
+- `--music-selftest`：拉 5 首 → 播第一首 → 轮询到落盘 → 打 `playing / t / cached / bytes / err / waited`。判定标准是 `playing=1` 且 `t` 在走 —— 只看 `cached` 会被 10 字节错误页骗过去
+- `--video-selftest --play`：拉 NASA 片单 → 打开第一条 → 打 `ready total` 与 `playing t=…`（时间在走才算真能解码）
+- `--anime-selftest`：同上，跑内置开源动画片单（和视频频道共用视图，所以参数分开）
+- `--bookdash-selftest`：绘本全链路（书目 → 详情 → 内页 → 真下第一张图）。源站一改版这里最先红，比在阅读器里看到空白快得多
 - `--debug-settings`：启动后直接弹出设置页（与书架齿轮同一入口）
 - `--scroll-mid`：直接定位到章中 45%
 - `--scroll-end`：定位到章末（验证跨章衔接）

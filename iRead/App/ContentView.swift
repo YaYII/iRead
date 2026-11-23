@@ -24,7 +24,9 @@ struct ContentView: View {
     @EnvironmentObject private var settings: ReaderSettings
     /// 听书是全局组件，书架只负责发起/收起，不承载播放状态
     @ObservedObject private var listening = ListeningCenter.shared
-    /// 书架是否停在「漫画书」分类：漫画不能听，那个分类下要把「听」球收起来
+    /// 音乐也是全局播放：切标签、进阅读器都不该停
+    @ObservedObject private var music = MusicPlayer.shared
+    /// 书架当前分类：只有「电子书」下才有可听的当前书
     @ObservedObject private var shelfMode = ShelfMode.shared
 
     @State private var selection = 0
@@ -34,12 +36,12 @@ struct ContentView: View {
     @State private var showDownloads = false
     @State private var showSettings = false
 
-    /// 漫画书架、漫画搜索页都不显示「听」球：这两处没有可听的当前书。
-    /// 写作页也不显示：那儿是稿纸，跟朗读没有关系。
+    /// 「听」球只在书架（电子书分类）出现。
+    /// 搜索页有自己的音乐/视频播放器，漫画、音乐、视频分类没有「当前在听的书」，
+    /// 写作页是稿纸，这几处留着球只会点开一个空界面。
     private var showsListeningDock: Bool {
-        if selection == 2 || selection == 3 { return false }
-        if selection == 0 && shelfMode.isComic { return false }
-        return true
+        guard selection == 0 else { return false }
+        return shelfMode.isEbook
     }
 
     var body: some View {
@@ -55,6 +57,16 @@ struct ContentView: View {
                 },
                 onOpenSettings: {
                     showSettings = true
+                },
+                onOpenSearch: { category in
+                    selection = 1
+                    // 搜索页按频道懒加载，先切标签再告诉它落到哪一格
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(
+                            name: .iReadSwitchSearchCategory,
+                            object: category.rawValue
+                        )
+                    }
                 }
             )
             .tabItem {
@@ -62,9 +74,10 @@ struct ContentView: View {
             }
             .tag(0)
 
-            // 网络搜书：搜索在线书源，正文下载到本机后离线阅读
+            // 统一搜索：书籍 / 漫画 / 音乐 / 动漫 / 视频五个频道左右滑。
+            // 以前「搜书」「漫画」各占一个 Tab，再加音乐视频就放不下了。
             ZStack(alignment: .bottomTrailing) {
-                NovelSearchView()
+                SearchHubView()
                 if !NovelDownloadManager.shared.tasks.isEmpty {
                     Button {
                         showDownloads = true
@@ -82,36 +95,28 @@ struct ContentView: View {
                 }
             }
             .tabItem {
-                Label("搜书", systemImage: "magnifyingglass")
+                Label("搜索", systemImage: "magnifyingglass")
             }
             .tag(1)
 
-            // 漫画搜索：独立的第三个入口，和「搜书」互不相干。
-            // 不做成搜书页里的开关：两类源的输入、结果、后续阅读器都不同，
-            // 混在一起每次搜索都会白跑一半源。
-            ComicSearchView()
-                .tabItem {
-                    Label("漫画", systemImage: "rectangle.stack")
-                }
-                .tag(2)
-
-            // 写作：和「看」分开的第四个空间。书架上的是别人写的成品，
+            // 写作：和「看」分开的第三个空间。书架上的是别人写的成品，
             // 这里是自己（和 AI）写的草稿，两边不共用表、不互相覆盖。
             WritingHomeView()
                 .tabItem {
                     Label("写作", systemImage: "square.and.pencil")
                 }
-                .tag(3)
+                .tag(2)
         }
         .tint(settings.theme.accent)
         .preferredColorScheme(settings.theme.colorScheme)
-        // 听书悬浮组件常驻在标签栏上方：右下「听」球进界面，左下胶囊控制播放。
-        // 用 overlay 而非 safeAreaInset —— 悬浮球不该把书架列表往上顶出一块空白。
-        // 挂在根视图上，切标签、退出阅读页都不会消失。
+        // 音乐条优先于「听」球：两者不会同时出声，开音乐时朗读已停。
+        // 用 overlay 而非 safeAreaInset —— 悬浮条不该把书架列表往上顶出一块空白。
         .overlay(alignment: .bottom) {
-            // 漫画书架和漫画搜索页都收起来：这两处没有「当前在听的书」，
-            // 球点开只会进一个空界面。
-            if showsListeningDock {
+            if music.isActive {
+                MusicMiniBar()
+                    .environmentObject(settings)
+                    .padding(.bottom, 62)
+            } else if showsListeningDock {
                 ListeningFloatingDock(onOpen: openPlayer, bottomInset: 72)
                     .environmentObject(settings)
             }
@@ -133,6 +138,10 @@ struct ContentView: View {
                 .environmentObject(store)
                 .environmentObject(settings)
         }
+        // 音乐播放器挂根视图：搜索结果、书架、迷你条都只是把 wantsPlayerSheet 置 true
+        .sheet(isPresented: $music.wantsPlayerSheet) {
+            MusicPlayerView()
+        }
         .sheet(isPresented: $showWiFiTransfer) {
             WiFiTransferView()
                 .environmentObject(store)
@@ -153,8 +162,12 @@ struct ContentView: View {
             let args = ProcessInfo.processInfo.arguments
             // AI 服务配置：截图/自测时不必进设置页手打（模拟器没法输入）
             applyAIDebugArguments(args)
+            // --bookdash-selftest：绘本链路（书目→详情→内页→下第一张图）自检
+            if args.contains("--bookdash-selftest") {
+                Task { await PictureBookSource.selfTest() }
+            }
             // --writing：直接切到写作页
-            if args.contains("--writing") { selection = 3 }
+            if args.contains("--writing") { selection = 2 }
             // --night：截图时强制夜间主题（任何入口都生效）
             if args.contains("--night") { settings.theme = .night }
             // --speed 1.7：截图时指定语速（0.4～4.0）
@@ -171,8 +184,13 @@ struct ContentView: View {
             if args.contains("--debug-wifi") {
                 showWiFiTransfer = true
             }
-            // --debug-search：直接切到搜书页（自测/自动化用）
+            // --debug-search：直接切到搜索页（默认书籍频道）
             if args.contains("--debug-search") {
+                selection = 1
+            }
+            // --search-music / --search-anime / --search-video：直接落到对应频道
+            if args.contains("--search-music") || args.contains("--search-anime")
+                || args.contains("--search-video") || args.contains("--search-category") {
                 selection = 1
             }
             // --debug-downloads：直接打开下载任务页（自测/截图用）
@@ -181,9 +199,9 @@ struct ContentView: View {
                     showDownloads = true
                 }
             }
-            // --comic-search=关键字：直接切到漫画页并自动搜索
+            // --comic-search=关键字：切到搜索页的漫画频道并自动搜索
             if args.contains(where: { $0.hasPrefix("--comic-search") }) {
-                selection = 2
+                selection = 1
             }
             // --debug-comic：直接打开书架里第一本漫画（自测/截图用）
             if args.contains("--debug-comic") {
@@ -281,7 +299,7 @@ struct ContentView: View {
             // 阅读页把 AI 生成的内容存进写作后点「去写作看」：
             // 先收拾掉阅读页，再切标签（顺序反了会看到标签切换被盖在阅读页下面）
             activeBook = nil
-            selection = 3
+            selection = 2
         }
         .onReceive(NotificationCenter.default.publisher(for: .iReadOpenSettings)) { _ in
             // 写作页的「AI 还没配置」引导：直接弹设置

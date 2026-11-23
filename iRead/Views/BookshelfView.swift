@@ -16,6 +16,9 @@ struct BookshelfView: View {
     var onListenBook: (Book) -> Void
     /// 右上角齿轮：设置不再是 Tab，由外层弹 sheet
     var onOpenSettings: () -> Void
+    /// 音乐 / 视频 / 漫画分类的搜索入口：统一跳到搜索 Tab 的对应频道。
+    /// 书架不再自己弹漫画搜索 sheet —— 搜索只有一个入口。
+    var onOpenSearch: (SearchCategory) -> Void
 
     @State private var searchText = ""
     @State private var showSearch = false
@@ -23,24 +26,30 @@ struct BookshelfView: View {
     @State private var showGrid = true
     @State private var showImport = false
 
-    /// 书架分类：左边电子书（默认），右边漫画书。
-    /// 两类共用 `store.books` 这张表（`kind` 区分），只是展示与入口分开，
-    /// 这样备份、搜索、进度逻辑都不必各写一份。
+    /// 书架分类：书 / 漫画 / 音乐 / 视频。
+    /// 前三类共用 `store.books` 那张表（`kind` 区分），音乐和视频各自有独立索引：
+    /// 它们的「一本」不是章节，硬塞进 Book 会让进度、封面、下载全都要写两套。
     @State private var shelf: ShelfKind = .ebook
     @State private var showComicSearch = false
     @State private var showComicImporter = false
     @ObservedObject private var comicDownloads = ComicDownloadManager.shared
+    @ObservedObject private var musicStore = MusicStore.shared
+    @ObservedObject private var videoStore = VideoStore.shared
 
     enum ShelfKind: String, CaseIterable, Identifiable {
         case ebook
         case comic
+        case music
+        case video
 
         var id: String { rawValue }
 
         var title: String {
             switch self {
-            case .ebook: return "电子书"
-            case .comic: return "漫画书"
+            case .ebook: return "书"
+            case .comic: return "漫画"
+            case .music: return "音乐"
+            case .video: return "视频"
             }
         }
 
@@ -48,6 +57,8 @@ struct BookshelfView: View {
             switch self {
             case .ebook: return "book.closed"
             case .comic: return "rectangle.stack"
+            case .music: return "music.note"
+            case .video: return "film"
             }
         }
     }
@@ -67,11 +78,13 @@ struct BookshelfView: View {
     init(
         onOpenBook: @escaping (Book) -> Void = { _ in },
         onListenBook: @escaping (Book) -> Void = { _ in },
-        onOpenSettings: @escaping () -> Void = {}
+        onOpenSettings: @escaping () -> Void = {},
+        onOpenSearch: @escaping (SearchCategory) -> Void = { _ in }
     ) {
         self.onOpenBook = onOpenBook
         self.onListenBook = onListenBook
         self.onOpenSettings = onOpenSettings
+        self.onOpenSearch = onOpenSearch
     }
 
     /// 番茄式书架：九宫格（三列），封面小、信息少。窄屏（SE）也能放下三列。
@@ -82,6 +95,8 @@ struct BookshelfView: View {
     /// 置顶优先，其次最近阅读，其次添加时间；搜索按书名 / 作者过滤。
     /// 先按分类过滤：电子书和漫画书是两个书架，互相看不到。
     private var sortedBooks: [Book] {
+        // 音乐 / 视频不是 Book，别拿书单去算它们
+        guard shelf == .ebook || shelf == .comic else { return [] }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let filtered = store.books.filter { book in
             guard book.isComic == (shelf == .comic) else { return false }
@@ -119,13 +134,17 @@ struct BookshelfView: View {
                 if let message = store.lastError {
                     errorBanner(message)
                 }
-                if showSearch || !searchText.isEmpty {
+                if shelf == .ebook && (showSearch || !searchText.isEmpty) {
                     searchBar
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
                 ScrollView {
-                    if sortedBooks.isEmpty {
+                    if shelf == .music {
+                        MusicShelfGrid { onOpenSearch(.music) }
+                    } else if shelf == .video {
+                        VideoShelfGrid { onOpenSearch(.video) }
+                    } else if sortedBooks.isEmpty {
                         emptyState
                             .padding(.top, 56)
                     } else if showGrid {
@@ -158,18 +177,28 @@ struct BookshelfView: View {
             shelf = .comic
         }
         .onChange(of: shelf) { _, newValue in
-            // 听书悬浮球挂在根视图上，漫画既不能听也没有「当前书」，
-            // 在漫画分类下留在那儿只会占地方，用这个共享标记把它收起来。
+            // 听书悬浮球挂在根视图上：漫画、音乐、视频分类下没有「当前在听的书」，
+            // 写作页也不是书架，用共享标记把它收起来。
             ShelfMode.shared.isComic = (newValue == .comic)
+            ShelfMode.shared.isEbook = (newValue == .ebook)
+            if newValue != .ebook {
+                showSearch = false
+                searchText = ""
+                searchFocused = false
+            }
         }
         .onAppear {
             ShelfMode.shared.isComic = (shelf == .comic)
+            ShelfMode.shared.isEbook = (shelf == .ebook)
             // 仅供自动化自测：--shelf-comic 启动直接落在漫画书架
             let args = ProcessInfo.processInfo.arguments
             if args.contains("--shelf-comic") {
                 shelf = .comic
                 ShelfMode.shared.isComic = true
             }
+            // 仅供自动化自测：--shelf-music / --shelf-video 直接落在对应书架
+            if args.contains("--shelf-music") { shelf = .music }
+            if args.contains("--shelf-video") { shelf = .video }
             // 仅供自动化自测：--open-comic-search 从书架检验「漫画搜索」sheet 入口
             if args.contains("--open-comic-search") {
                 shelf = .comic
@@ -223,28 +252,32 @@ struct BookshelfView: View {
             Text("书架")
                 .font(.system(size: 20, weight: .bold))
                 .foregroundStyle(settings.theme.foreground)
-            Text("\(shelfCount) 本")
+            Text("\(shelfCount) \(shelfUnit)")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(settings.theme.secondary)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(Capsule().fill(settings.theme.secondary.opacity(0.14)))
             Spacer(minLength: 4)
-            // 搜索收进图标，和番茄书架一致：不占常驻一行
+            // 搜索收进图标，和番茄书架一致：不占常驻一行。
+            // 漫画 / 音乐 / 视频的放大镜都跳统一搜索页的对应频道。
             Button {
-                // 漫画书架的放大镜进「漫画搜索」模块：和搜书是两个互不相干的入口
-                if shelf == .comic {
-                    searchFocused = false
-                    showComicSearch = true
-                    return
-                }
-                if showSearch {
-                    searchFocused = false
-                    searchText = ""
-                    withAnimation(.easeInOut(duration: 0.18)) { showSearch = false }
-                } else {
-                    withAnimation(.easeInOut(duration: 0.18)) { showSearch = true }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { searchFocused = true }
+                searchFocused = false
+                switch shelf {
+                case .comic:
+                    onOpenSearch(.comic)
+                case .music:
+                    onOpenSearch(.music)
+                case .video:
+                    onOpenSearch(.video)
+                case .ebook:
+                    if showSearch {
+                        searchText = ""
+                        withAnimation(.easeInOut(duration: 0.18)) { showSearch = false }
+                    } else {
+                        withAnimation(.easeInOut(duration: 0.18)) { showSearch = true }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { searchFocused = true }
+                    }
                 }
             } label: {
                 Image(systemName: "magnifyingglass")
@@ -254,31 +287,38 @@ struct BookshelfView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(shelf == .comic ? "搜索漫画" : (showSearch ? "收起搜索" : "搜索书架"))
+            .accessibilityLabel(shelf == .ebook
+                                 ? (showSearch ? "收起搜索" : "搜索书架")
+                                 : "去搜索\(shelf.title)")
 
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) { showGrid.toggle() }
-            } label: {
-                Image(systemName: showGrid ? "square.grid.2x2" : "list.bullet")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(settings.theme.secondary)
-                    .frame(width: 30, height: 30)
-                    .contentShape(Rectangle())
+            // 网格 / 列表只对书和漫画有意义；音乐是方格封面，视频是 16:9 卡片
+            if shelf == .ebook || shelf == .comic {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { showGrid.toggle() }
+                } label: {
+                    Image(systemName: showGrid ? "square.grid.2x2" : "list.bullet")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(settings.theme.secondary)
+                        .frame(width: 30, height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(showGrid ? "切换为列表视图" : "切换为网格视图")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(showGrid ? "切换为列表视图" : "切换为网格视图")
 
-            Button {
-                if shelf == .comic { showComicImporter = true } else { showImport = true }
-            } label: {
-                Image(systemName: "plus")
-                    .font(.footnote.weight(.bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 30, height: 30)
-                    .background(Circle().fill(settings.theme.accent))
+            if shelf == .ebook || shelf == .comic {
+                Button {
+                    if shelf == .comic { showComicImporter = true } else { showImport = true }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.footnote.weight(.bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 30, height: 30)
+                        .background(Circle().fill(settings.theme.accent))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(shelf == .comic ? "导入漫画图片" : "导入书籍")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(shelf == .comic ? "导入漫画图片" : "导入书籍")
 
             // 设置只做一个 icon，不占 Tab、不带文字：齿轮本身就够表意
             Button {
@@ -313,17 +353,17 @@ struct BookshelfView: View {
                         showSearch = false
                     }
                 } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 3) {
                         Image(systemName: kind.icon)
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.system(size: 9, weight: .semibold))
                         Text(kind.title)
-                            .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                            .font(.system(size: 11, weight: selected ? .semibold : .regular))
                         Text("\(bookCount(kind))")
-                            .font(.system(size: 10, weight: .medium))
+                            .font(.system(size: 9, weight: .medium))
                             .opacity(0.65)
                     }
                     .foregroundStyle(selected ? settings.theme.foreground : settings.theme.secondary)
-                    .padding(.horizontal, 10)
+                    .padding(.horizontal, 6)
                     .padding(.vertical, 6)
                     .frame(maxWidth: .infinity)
                     .background(
@@ -345,7 +385,25 @@ struct BookshelfView: View {
     private var shelfCount: Int { bookCount(shelf) }
 
     private func bookCount(_ kind: ShelfKind) -> Int {
-        store.books.reduce(0) { $0 + ($1.isComic == (kind == .comic) ? 1 : 0) }
+        switch kind {
+        case .ebook:
+            return store.books.reduce(0) { $0 + ($1.isComic ? 0 : 1) }
+        case .comic:
+            return store.books.reduce(0) { $0 + ($1.isComic ? 1 : 0) }
+        case .music:
+            return musicStore.tracks.count
+        case .video:
+            return videoStore.items.count
+        }
+    }
+
+    /// 数量单位跟着分类走：「12 首」「3 个」比一律叫「本」自然
+    private var shelfUnit: String {
+        switch shelf {
+        case .ebook, .comic: return "本"
+        case .music: return "首"
+        case .video: return "个"
+        }
     }
 
     @ViewBuilder
@@ -454,7 +512,7 @@ struct BookshelfView: View {
             if isEmptyShelf {
                 HStack(spacing: 10) {
                     Button {
-                        if isComic { showComicSearch = true } else { showImport = true }
+                        if isComic { onOpenSearch(.comic) } else { showImport = true }
                     } label: {
                         Text(isComic ? "搜索漫画" : "导入 TXT")
                             .font(.subheadline.weight(.semibold))
@@ -970,6 +1028,8 @@ struct BookshelfView: View {
 final class ShelfMode: ObservableObject {
     static let shared = ShelfMode()
     @Published var isComic = false
+    /// 只有电子书分类才有「当前在听的书」；听书球据此收起
+    @Published var isEbook = true
     private init() {}
 }
 

@@ -13,6 +13,10 @@ enum ComicFetcher {
         if source.kind?.lowercased() == "mangadex" {
             return try await MangaDexSource.search(keyword: keyword, source: source)
         }
+        // 儿童绘本：Book Dash 的 WordPress REST，书目和内页都从它取
+        if source.kind?.lowercased() == "bookdash" {
+            return try await PictureBookSource.search(keyword: keyword)
+        }
         // 通用规则源：漫画站和文字站的搜索页结构一样（列表 + 书名 + 链接），直接复用
         return try await NovelFetcher.search(source: source, keyword: keyword)
     }
@@ -20,6 +24,9 @@ enum ComicFetcher {
     static func detail(result: SearchResult, source: NovelSource) async throws -> NovelDetail {
         if source.kind?.lowercased() == "mangadex" {
             return try await MangaDexSource.chapters(result: result, source: source)
+        }
+        if source.kind?.lowercased() == "bookdash" {
+            return try await PictureBookSource.detail(result: result)
         }
         return try await NovelFetcher.chapters(result: result, source: source)
     }
@@ -29,6 +36,9 @@ enum ComicFetcher {
     static func pages(chapter: ChapterLink, source: NovelSource) async throws -> [ComicPage] {
         if source.kind?.lowercased() == "mangadex" {
             return try await MangaDexSource.pages(chapterID: chapter.url)
+        }
+        if source.kind?.lowercased() == "bookdash" {
+            return try await PictureBookSource.pages(bookURL: chapter.url)
         }
         return try await rulePages(chapter: chapter, source: source)
     }

@@ -262,6 +262,15 @@ final class SourceStore: ObservableObject {
             media: "comic",
             isBuiltin: true,
             note: "公开 API 漫画库，优先取简中/繁体译本，没有中文时回退原版。无需登录。"
+        ),
+        NovelSource(
+            id: "builtin-bookdash",
+            name: "Book Dash · 儿童绘本",
+            baseURL: "https://bookdash.org",
+            kind: "bookdash",
+            media: "comic",
+            isBuiltin: true,
+            note: "CC BY 4.0 开源绘本，整本内页直接缓存到本机。多为英文与无字书，适合亲子共读。"
         )
     ]
 }
