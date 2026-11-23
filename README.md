@@ -490,6 +490,11 @@ iOS 包必须选 `ios-shared-onnxruntime-static` 这一款：`ios-static` 变体
 
 自检：`--debug-reader-text --scroll-selftest` 连续下滑 18 次、上滑 18 次，判据是「视口顶部落在哪一章哪个字」不能逆向变化（`bounces=0`）。
 
+听书跟读还有一个同源的「拽回」：`ensureVisible` 原先只要朗读那句恰好在视口内就立刻恢复跟随，
+下一句又把正在飞行的页面拽回去。现在**手势中不抢跟随权**，只有手停下、且目标行确实进了视口才恢复；
+用户滑开后就彻底交还控制权，靠「回到朗读位置」这一下显式收回。
+自检 `--follow-selftest`：滑开后朗读继续推进必须 `drift=0`，收回跟随后必须 `move!=0`。
+
 ## 构建与运行
 
 要求：Xcode 26.5+（iOS 26.5 SDK）、iOS 17.0+ 真机或模拟器。
@@ -554,6 +559,9 @@ xcodebuild -project iRead.xcodeproj -scheme iRead \
 - `--debug-reader-text`：打开第一本**有正文**的文字书（跳过绘本/漫画），滚动、听书跟随的自测都靠它
 - `--scroll-selftest`：连续下滑 18 次 + 上滑 18 次，逐步打 `ch / char / y / size / win`，
   判据是「视口顶部落在哪一章哪个字」不能逆向变化。收尾打 `bounces=0` 才算过
+- `--follow-selftest`：朗读跟随的控制权移交，不依赖 TTS 进度回调（模拟器里 TTS 进度不稳，
+  靠它判断会误判）。两条判据：滑开后朗读游标继续推进时 `drift=0`（视口一动不动）；
+  收回跟随权后同一句 `move!=0`（视口还得跟得上）
 - `--debug-settings`：启动后直接弹出设置页（与书架齿轮同一入口）
 - `--scroll-mid`：直接定位到章中 45%
 - `--scroll-end`：定位到章末（验证跨章衔接）
