@@ -62,6 +62,10 @@ final class WiFiTransferServer: ObservableObject {
                         self?.address = "http://\(ip):\(Self.port)/?t=\(newToken)"
                         self?.isRunning = true
                         self?.lastError = nil
+                        #if DEBUG
+                        // 自测/排障用：地址和访问码本来就在界面上显示，日志里再留一份方便 curl
+                        NSLog("[WiFi] serving at http://\(ip):\(Self.port)/?t=\(newToken)")
+                        #endif
                     }
                 case .failed(let error):
                     DispatchQueue.main.async {
@@ -253,6 +257,13 @@ final class WiFiTransferServer: ObservableObject {
             let name = (rawName as NSString).lastPathComponent
             let title = (name as NSString).deletingPathExtension
 
+            // 音频走音乐库，其余还是当书解析。
+            // 判据用扩展名而不是 MIME：浏览器给的 type 经常是空的或 application/octet-stream
+            if LocalMusicImport.isAudioFile(name) {
+                uploadAudio(body: body, name: name)
+                return
+            }
+
             // 导入会改写 @Published 书架，必须回到主线程
             DispatchQueue.main.async { [weak self] in
                 guard let self, let server = self.server else { return }
@@ -263,6 +274,29 @@ final class WiFiTransferServer: ObservableObject {
                         "ok": true,
                         "title": book.title,
                         "chapters": book.chapterCount
+                    ])
+                } catch {
+                    server.addRecord(title: name, ok: false, message: error.localizedDescription)
+                    self.respond(400, json: ["ok": false, "error": error.localizedDescription])
+                }
+            }
+        }
+
+        private func uploadAudio(body: Data, name: String) {
+            Task { @MainActor [weak self] in
+                guard let self, let server = self.server else { return }
+                do {
+                    let track = try await LocalMusicImport.importData(body, fileName: name)
+                    server.addRecord(
+                        title: track.title,
+                        ok: true,
+                        message: "音乐 · \(track.artist) · \(track.durationText)"
+                    )
+                    self.respond(200, json: [
+                        "ok": true,
+                        "title": track.title,
+                        "artist": track.artist,
+                        "music": true
                     ])
                 } catch {
                     server.addRecord(title: name, ok: false, message: error.localizedDescription)
@@ -317,15 +351,16 @@ final class WiFiTransferServer: ObservableObject {
               .tip{font-size:13px;color:#8a7f6d;margin-top:20px;line-height:1.8}
             </style>
             <h1>iRead · WiFi 传书</h1>
-            <p class="sub">选好 TXT，点上传，书会自动出现在手机书架里</p>
+            <p class="sub">TXT 传书，音频传歌 —— 都会自动出现在手机上</p>
             <div class="card">
-              <input type="file" id="file" accept=".txt,text/plain" multiple>
+              <input type="file" id="file" accept=".txt,.mp3,.m4a,.aac,.flac,.wav,.aiff,.caf,.ogg,.opus" multiple>
               <button id="go" onclick="send()">上传到 iRead</button>
               <div id="log"></div>
             </div>
             <div class="tip">
               · 手机需和本设备在同一个 WiFi，且 iRead 保持打开<br>
-              · 支持 UTF-8 / GBK / UTF-16 编码的 TXT，单本不超过 60 MB<br>
+              · TXT 支持 UTF-8 / GBK / UTF-16；音频支持 mp3 / m4a / aac / flac / wav / aiff<br>
+              · 单个文件不超过 60 MB<br>
               · 文件只保存在手机本机，不经过任何外部服务器
             </div>
             <script>
@@ -334,7 +369,7 @@ final class WiFiTransferServer: ObservableObject {
             function line(text, cls){ const d=document.createElement('div'); d.textContent=text; if(cls)d.className=cls; log.appendChild(d); }
             async function send(){
               const files = document.getElementById('file').files;
-              if(!files.length){ line('请先选择 TXT 文件','bad'); return; }
+              if(!files.length){ line('请先选择文件','bad'); return; }
               const btn = document.getElementById('go'); btn.disabled = true;
               for(const f of files){
                 line('正在上传：' + f.name);
@@ -345,8 +380,9 @@ final class WiFiTransferServer: ObservableObject {
                     body: await f.arrayBuffer()
                   });
                   const j = await res.json();
-                  if(j.ok) line('✓ 《' + j.title + '》已加入书架（' + j.chapters + ' 章）','ok');
-                  else line('✗ ' + (j.error || '上传失败'),'bad');
+                  if(!j.ok) line('✗ ' + (j.error || '上传失败'),'bad');
+                  else if(j.music) line('♪ ' + j.title + ' — ' + j.artist + ' 已加入音乐','ok');
+                  else line('✓ 《' + j.title + '》已加入书架（' + j.chapters + ' 章）','ok');
                 }catch(e){ line('✗ 上传失败：' + e.message,'bad'); }
               }
               btn.disabled = false;

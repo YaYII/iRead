@@ -20,6 +20,13 @@ struct MusicTrack: Identifiable, Codable, Hashable {
     /// 已缓存到本机的文件名（Documents/Music/Cache/ 下），nil = 还没下完
     var cachedFile: String? = nil
     var cachedBytes: Int64 = 0
+    /// 本机导入的原始音频文件名（Documents/Music/Local/ 下）。
+    ///
+    /// 和 `cachedFile` 是两回事：缓存是「听过一次就存一份副本」，删了还能重下；
+    /// 导入是用户自己的文件，删了就是真删。所以不能合并成一个字段。
+    var localFile: String? = nil
+    /// 从音频标签里抽出来的封面（Documents/Music/Artwork/ 下），没有就退回程序化封面
+    var artworkFile: String? = nil
     var isFavorite: Bool = false
     var addedAt: Date? = nil
     var lastPlayedAt: Date? = nil
@@ -29,6 +36,13 @@ struct MusicTrack: Identifiable, Codable, Hashable {
     var hue: Double = 0.08
 
     var isCached: Bool { !(cachedFile ?? "").isEmpty }
+
+    /// 用户自己导进来的（不是从在线曲库下来的）
+    var isLocal: Bool { !(localFile ?? "").isEmpty }
+
+    /// 只要有本地文件就不该再走网络 —— 缓存和导入都算
+    var hasLocalAudio: Bool { isCached || isLocal }
+
 
     var source: MusicCatalogSource? { MusicCatalogSource(rawValue: sourceID) }
 
@@ -50,6 +64,7 @@ struct MusicTrack: Identifiable, Codable, Hashable {
     enum CodingKeys: String, CodingKey {
         case id, title, artist, duration, streamURL, license, licenseURL
         case sourceID, sourceName, cachedFile, cachedBytes, isFavorite
+        case localFile, artworkFile
         case addedAt, lastPlayedAt, playCount, hue
     }
 
@@ -92,6 +107,8 @@ struct MusicTrack: Identifiable, Codable, Hashable {
         sourceName = try c.decodeIfPresent(String.self, forKey: .sourceName) ?? ""
         cachedFile = try c.decodeIfPresent(String.self, forKey: .cachedFile)
         cachedBytes = try c.decodeIfPresent(Int64.self, forKey: .cachedBytes) ?? 0
+        localFile = try c.decodeIfPresent(String.self, forKey: .localFile)
+        artworkFile = try c.decodeIfPresent(String.self, forKey: .artworkFile)
         isFavorite = try c.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
         addedAt = try c.decodeIfPresent(Date.self, forKey: .addedAt)
         lastPlayedAt = try c.decodeIfPresent(Date.self, forKey: .lastPlayedAt)
@@ -100,18 +117,25 @@ struct MusicTrack: Identifiable, Codable, Hashable {
     }
 }
 
-/// 音乐列表来源。目前只有 ccMixter（免注册、直链 mp3）；
-/// Jamendo 需要免费 client_id，留了入口但没有 key 时不出现在界面上。
+/// 音乐列表来源。
+/// - ccMixter / Jamendo：在线开源曲库，免注册（Jamendo 要免费 client_id）；
+/// - local：用户自己的文件（「文件」App、WiFi 传歌、Finder 拖进来都算）。
+///   它不联网、也没有许可条款，界面上不列进「曲库」清单。
 enum MusicCatalogSource: String, CaseIterable, Identifiable {
     case ccmixter
     case jamendo
+    case local
 
     var id: String { rawValue }
+
+    /// 「曲库」清单只列在线源，本机导入不是一个曲库
+    static var online: [MusicCatalogSource] { [.ccmixter, .jamendo] }
 
     var title: String {
         switch self {
         case .ccmixter: return "ccMixter"
         case .jamendo: return "Jamendo"
+        case .local: return "本机导入"
         }
     }
 
@@ -119,6 +143,7 @@ enum MusicCatalogSource: String, CaseIterable, Identifiable {
         switch self {
         case .ccmixter: return "https://ccmixter.org"
         case .jamendo: return "https://www.jamendo.com"
+        case .local: return ""
         }
     }
 
@@ -126,6 +151,7 @@ enum MusicCatalogSource: String, CaseIterable, Identifiable {
         switch self {
         case .ccmixter: return "Creative Commons 混音社区，免注册直连"
         case .jamendo: return "需要免费 client_id，填在音乐页底部"
+        case .local: return "你自己的音频文件，不联网、不上传"
         }
     }
 
@@ -143,7 +169,7 @@ enum MusicCatalogSource: String, CaseIterable, Identifiable {
         switch self {
         case .ccmixter:
             headers["Referer"] = "https://ccmixter.org/"
-        case .jamendo:
+        case .jamendo, .local:
             break
         }
         return headers

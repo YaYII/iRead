@@ -101,13 +101,28 @@ struct MusicPlayerView: View {
     private var artwork: some View {
         ZStack {
             if let track = player.track {
-                RoundedRectangle(cornerRadius: 26)
-                    .fill(MediaArt.gradient(track.hue, dark: settings.theme == .night))
-                    .shadow(color: .black.opacity(0.22), radius: 24, y: 14)
+                if let image = ArtworkStore.image(for: track) {
+                    // 导入的歌带专辑图：铺满，底部压一层渐变，来源字才看得清
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .overlay(
+                            LinearGradient(
+                                colors: [.clear, .black.opacity(0.42)],
+                                startPoint: .center, endPoint: .bottom
+                            )
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 26))
+                        .shadow(color: .black.opacity(0.22), radius: 24, y: 14)
+                } else {
+                    RoundedRectangle(cornerRadius: 26)
+                        .fill(MediaArt.gradient(track.hue, dark: settings.theme == .night))
+                        .shadow(color: .black.opacity(0.22), radius: 24, y: 14)
 
-                Image(systemName: "music.note")
-                    .font(.system(size: 92, weight: .ultraLight))
-                    .foregroundStyle(.white.opacity(0.9))
+                    Image(systemName: "music.note")
+                        .font(.system(size: 92, weight: .ultraLight))
+                        .foregroundStyle(.white.opacity(0.9))
+                }
 
                 VStack {
                     Spacer()
@@ -117,8 +132,9 @@ struct MusicPlayerView: View {
                             .tracking(1.4)
                             .foregroundStyle(.white.opacity(0.7))
                         Spacer()
-                        if track.isCached {
-                            Label("本机", systemImage: "arrow.down.circle.fill")
+                        if track.hasLocalAudio {
+                            Label(track.isLocal ? "本机文件" : "本机",
+                                  systemImage: track.isLocal ? "folder.fill" : "arrow.down.circle.fill")
                                 .font(.system(size: 9, weight: .medium))
                                 .foregroundStyle(.white.opacity(0.8))
                         }
@@ -269,7 +285,11 @@ struct MusicPlayerView: View {
         VStack(spacing: 8) {
             if let track = liveTrack {
                 HStack(spacing: 6) {
-                    if track.isCached {
+                    if track.isLocal {
+                        // 自己的文件，没有「下载/缓存」这回事，别写「在线播放」
+                        Label("本机文件，不联网", systemImage: "folder.fill")
+                            .foregroundStyle(settings.theme.accent)
+                    } else if track.isCached {
                         Label("已存到本机", systemImage: "checkmark.circle.fill")
                             .foregroundStyle(settings.theme.accent)
                     } else if let state = store.cacheState(for: track), state.isActive {

@@ -173,10 +173,10 @@ struct MusicSearchView: View {
     private var list: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
-                if !store.cachedTracks.isEmpty, !hasSearched {
-                    sectionHeader("我的音乐", detail: "\(store.cachedTracks.count) 首 · 已在本机")
-                    ForEach(store.cachedTracks.prefix(6)) { track in
-                        row(track, in: Array(store.cachedTracks.prefix(6)))
+                if !store.onDeviceTracks.isEmpty, !hasSearched {
+                    sectionHeader("我的音乐", detail: "\(store.onDeviceTracks.count) 首 · 已在本机")
+                    ForEach(store.onDeviceTracks.prefix(6)) { track in
+                        row(track, in: Array(store.onDeviceTracks.prefix(6)))
                     }
                     sectionHeader("推荐", detail: "ccMixter 热门")
                 }
@@ -230,8 +230,8 @@ struct MusicSearchView: View {
                             .lineLimit(1)
                         Text("·")
                         Text(track.durationText)
-                        if track.isCached {
-                            Image(systemName: "arrow.down.circle.fill")
+                        if track.hasLocalAudio {
+                            Image(systemName: track.isLocal ? "folder.fill" : "arrow.down.circle.fill")
                                 .font(.system(size: 9))
                         }
                     }
@@ -248,11 +248,11 @@ struct MusicSearchView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            if track.isCached {
+            if track.hasLocalAudio {
                 Button(role: .destructive) {
                     store.delete(track.id)
                 } label: {
-                    Label("从本机移除", systemImage: "trash")
+                    Label(track.isLocal ? "从库里删除（同时删文件）" : "从本机移除", systemImage: "trash")
                 }
             }
             if let url = URL(string: track.licenseURL) {
@@ -265,11 +265,11 @@ struct MusicSearchView: View {
 
     @ViewBuilder
     private func trailing(track: MusicTrack, cacheState: MediaDownloader.DownloadState?) -> some View {
-        if track.isCached {
+        if track.hasLocalAudio {
             HStack(spacing: 3) {
-                Image(systemName: "checkmark.circle.fill")
+                Image(systemName: track.isLocal ? "folder.fill" : "checkmark.circle.fill")
                     .font(.system(size: 10))
-                Text("已存")
+                Text(track.isLocal ? "本机" : "已存")
                     .font(.system(size: 9, weight: .medium))
             }
             .foregroundStyle(settings.theme.accent)
@@ -444,28 +444,40 @@ struct MusicCover: View {
     var size: CGFloat
     var showsNote: Bool = true
 
+    @State private var artwork: UIImage?
+
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: size * 0.18)
-                .fill(MediaArt.gradient(track.hue))
+            if let artwork {
+                // 导入的歌带专辑图：直接铺满，缩略图里也能一眼认出是哪张
+                Image(uiImage: artwork)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                RoundedRectangle(cornerRadius: size * 0.18)
+                    .fill(MediaArt.gradient(track.hue))
 
-            if showsNote {
-                Image(systemName: "music.note")
-                    .font(.system(size: size * 0.34, weight: .light))
-                    .foregroundStyle(.white.opacity(0.92))
-            }
+                if showsNote {
+                    Image(systemName: "music.note")
+                        .font(.system(size: size * 0.34, weight: .light))
+                        .foregroundStyle(.white.opacity(0.92))
+                }
 
-            // 首字压在右下角，列表里扫一眼能区分同名歌
-            if size >= 44 {
-                Text(String(track.title.prefix(1)).uppercased())
-                    .font(.system(size: size * 0.16, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.55))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                    .padding(size * 0.08)
+                // 首字压在右下角，列表里扫一眼能区分同名歌
+                if size >= 44 {
+                    Text(String(track.title.prefix(1)).uppercased())
+                        .font(.system(size: size * 0.16, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                        .padding(size * 0.08)
+                }
             }
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.18))
+        .task(id: track.artworkFile) {
+            artwork = track.artworkFile == nil ? nil : ArtworkStore.image(for: track)
+        }
     }
 }
 
@@ -480,7 +492,8 @@ private struct MusicSourceSheet: View {
         NavigationStack {
             List {
                 Section("曲库") {
-                    ForEach(MusicCatalogSource.allCases) { source in
+                    // 只列在线源：本机导入不是「曲库」，也没有 key 要填
+                    ForEach(MusicCatalogSource.online) { source in
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
                                 Text(source.title).font(.headline)

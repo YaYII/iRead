@@ -1118,7 +1118,11 @@ struct iReadApp: App {
 
     /// 把合成结果写成 WAV 到 Documents，方便拷出来人工试听
     private static func dumpWav(_ samples: [Float], sampleRate: Int32, name: String) {
-        guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        guard let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        // 自检产物放子目录：Documents 根目录是用户可见的「收件箱」，
+        // 音乐导入会扫那里，合成的试听 wav 混在根目录会被当成歌导进来
+        let dir = base.appendingPathComponent("TTS", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent(name)
         var data = Data()
         let byteRate = sampleRate * 2

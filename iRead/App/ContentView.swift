@@ -169,6 +169,15 @@ struct ContentView: View {
             if args.contains("--playback-selftest") {
                 runPlaybackSelftest()
             }
+            // 文件 App / Finder 直接丢进 iRead 的音频，启动时收进音乐库。
+            // 不做这一步的话，文件躺在沙盒里永远不会出现在书架上。
+            Task { await LocalMusicImport.scanInbox() }
+            // --music-import <路径>：自测用，把指定音频导进音乐库
+            if let i = args.firstIndex(of: "--music-import"), i + 1 < args.count {
+                runMusicImportSelftest(path: args[i + 1],
+                                       play: args.contains("--music-play"),
+                                       open: args.contains("--music-open"))
+            }
             // --writing：直接切到写作页
             if args.contains("--writing") { selection = 2 }
             // --night：截图时强制夜间主题（任何入口都生效）
@@ -238,10 +247,10 @@ struct ContentView: View {
                 }
             } else if args.contains("--debug-reader-text") {
                 // 仅供自测：打开一本**有正文**的文字书（跳过绘本/漫画）。
-                // 滚动、听书跟随这些自测都只能在文字书上跑。
+                // 滚动、听书跟随这些自测都只能在文字书上跑，章数太少的测试书撑不住来回滚
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                     activeBook = store.books.first {
-                        !$0.isComic && store.content(for: $0.id) != nil
+                        !$0.isComic && $0.chapterCount >= 3 && store.content(for: $0.id) != nil
                     }
                 }
             } else if args.contains("--debug-reader") {
@@ -341,6 +350,32 @@ struct ContentView: View {
         playback.openPlayer()
     }
 
+    /// 仅供自测：导入一首本地音频，打印解析出来的标签；
+    /// 加 `--music-play` 再真播一次，确认能从本机文件出声。
+    private func runMusicImportSelftest(path: String, play: Bool, open: Bool) {
+        Task { @MainActor in
+            do {
+                let track = try await LocalMusicImport.importFile(at: URL(fileURLWithPath: path))
+                NSLog("[MusicImport] imported title=%@ artist=%@ duration=%.1fs local=%@ artwork=%@",
+                      track.title, track.artist, track.duration,
+                      track.localFile ?? "-", track.artworkFile ?? "-")
+                guard play, let file = MusicStore.shared.localURL(for: track) else { return }
+                MusicPlayer.shared.play(track, queue: [track])
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if open { PlaybackCenter.shared.openPlayer() }
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                NSLog("[MusicImport] play file=%@ playing=%d t=%.1f/%.1f kind=%@",
+                      file.lastPathComponent,
+                      MusicPlayer.shared.isPlaying ? 1 : 0,
+                      MusicPlayer.shared.currentTime,
+                      MusicPlayer.shared.duration,
+                      PlaybackCenter.shared.kind.rawValue)
+            } catch {
+                NSLog("[MusicImport] selftest failed: %@", error.localizedDescription)
+            }
+        }
+    }
+
     /// 仅供自测：验证「听书与音乐是同一个播放体系」。
     ///
     /// 顺序：听书 → 开音乐（书只应被暂停、书还在）→ 切回听书（音乐只应被暂停、曲目还在）。
@@ -358,8 +393,14 @@ struct ContentView: View {
                       ListeningCenter.shared.bookID ?? "-")
             }
 
-            // 绘本/漫画没有可朗读的正文，挑一本真有文字的
-            guard let book = store.books.first(where: { !$0.isComic && store.content(for: $0.id) != nil }) else {
+            // 绘本/漫画没有可朗读的正文，挑一本真有文字的。
+            // 还得够长：自测跨 10 秒，一章几百字的书会在中途读完触发 finishBook，
+            // 看起来就像「切回听书丢了」——之前被 WiFi 传进去的 3 行测试书坑过一次。
+            guard let book = store.books.first(where: { candidate in
+                !candidate.isComic
+                    && store.content(for: candidate.id) != nil
+                    && candidate.chapterCount >= 3
+            }) else {
                 NSLog("[Playback] no book")
                 return
             }
@@ -367,7 +408,10 @@ struct ContentView: View {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             snapshot("book-started")
 
-            guard let track = MusicStore.shared.tracks.first else {
+            // 优先挑在线曲目：本地导入的歌直接读文件，覆盖不到「先下后播」那条路
+            let pool = MusicStore.shared.tracks
+            let online = pool.first { !$0.isLocal && !$0.streamURL.isEmpty }
+            guard let track = online ?? pool.first else {
                 snapshot("no-music")
                 return
             }
